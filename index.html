@@ -37,7 +37,6 @@
     box-shadow: 0 3px 0 #A9D3EA;
   }
   
-  /* Pa-cute Pudding Counter Badge */
   .pudding-badge {
     background: #FDFBF3;
     border: 2px dashed #C9A227;
@@ -179,7 +178,7 @@
   <div id="expenseView" style="display:none;"></div>
 </div>
 
-<!-- Firebase SDK (Modular v10) -->
+<!-- Firebase SDK -->
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
   import { getFirestore, collection, addDoc, onSnapshot, query, orderBy } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
@@ -199,17 +198,10 @@
     const app = initializeApp(firebaseConfig);
     db = getFirestore(app);
   } catch(e) {
-    console.warn("Firebase initialized with LocalStorage fallback.", e);
+    console.warn("Firebase fallback active.", e);
   }
 
-  window.FirebaseDB = {
-    db: db,
-    addDoc: addDoc,
-    collection: collection,
-    onSnapshot: onSnapshot,
-    query: query,
-    orderBy: orderBy
-  };
+  window.FirebaseDB = { db, addDoc, collection, onSnapshot, query, orderBy };
 </script>
 
 <script>
@@ -221,75 +213,45 @@
   ];
   var PAYMENTS = ['Cash', 'GCash', 'RCBC', 'GoTyme'];
 
-  var STORAGE_KEY = 'wubber_sales_log_v1';
-  var EXPENSE_KEY = 'wubber_expense_log_v1';
-  var ORDERNUM_KEY = 'wubber_order_num_v1';
-
   var salesList = [];
   var expenseList = [];
 
-  function loadSalesLocal() {
-    try {
-      var raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? JSON.parse(raw) : [];
-    } catch (e) { return []; }
-  }
-  function saveSalesLocal(list) {
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(list)); } catch (e) {}
-  }
-  function loadExpensesLocal() {
-    try {
-      var raw = localStorage.getItem(EXPENSE_KEY);
-      return raw ? JSON.parse(raw) : [];
-    } catch (e) { return []; }
-  }
-  function saveExpensesLocal(list) {
-    try { localStorage.setItem(EXPENSE_KEY, JSON.stringify(list)); } catch (e) {}
-  }
-  function loadOrderNum() {
-    try {
-      var n = parseInt(localStorage.getItem(ORDERNUM_KEY), 10);
-      return isNaN(n) ? 1 : n;
-    } catch (e) { return 1; }
-  }
-  function saveOrderNum(n) {
-    try { localStorage.setItem(ORDERNUM_KEY, String(n)); } catch (e) {}
-  }
+  function syncOrderCount() {
+    var nextOrderNum = salesList.length + 1;
+    state.orderNum = nextOrderNum;
+    var pill = document.getElementById('orderNumPill');
+    if (pill) pill.textContent = 'Order #' + String(nextOrderNum).padStart(3, '0');
 
-  function updateTotalTubCount() {
     var totalTubs = salesList.reduce(function(sum, order) {
-      return sum + order.lines.reduce(function(lSum, line) { return lSum + line.qty; }, 0);
+      return sum + (order.lines ? order.lines.reduce(function(lSum, line) { return lSum + line.qty; }, 0) : 0);
     }, 0);
-    var el = document.getElementById('tubCounter');
-    if(el) el.textContent = totalTubs;
+    var tubEl = document.getElementById('tubCounter');
+    if (tubEl) tubEl.textContent = totalTubs;
   }
 
   window.addEventListener('load', function() {
-    setTimeout(function() {
+    var checkInterval = setInterval(function() {
       if (window.FirebaseDB && window.FirebaseDB.db) {
+        clearInterval(checkInterval);
         var fdb = window.FirebaseDB;
         
         var qSales = fdb.query(fdb.collection(fdb.db, "sales"), fdb.orderBy("time", "desc"));
         fdb.onSnapshot(qSales, function(snapshot) {
           salesList = [];
           snapshot.forEach(function(doc) { salesList.push(doc.data()); });
-          updateTotalTubCount();
-          if(state.view === 'sales') renderSalesView();
+          syncOrderCount();
+          if (state.view === 'sales') renderSalesView();
         });
 
         var qExpenses = fdb.query(fdb.collection(fdb.db, "expenses"), fdb.orderBy("time", "desc"));
         fdb.onSnapshot(qExpenses, function(snapshot) {
           expenseList = [];
           snapshot.forEach(function(doc) { expenseList.push(doc.data()); });
-          if(state.view === 'expense') renderExpenseView();
-          if(state.view === 'sales') renderSalesView();
+          if (state.view === 'expense') renderExpenseView();
+          if (state.view === 'sales') renderSalesView();
         });
-      } else {
-        salesList = loadSalesLocal();
-        expenseList = loadExpensesLocal();
-        updateTotalTubCount();
       }
-    }, 500);
+    }, 300);
   });
 
   var state = {
@@ -300,7 +262,7 @@
     fulfillDate: '',
     payment: 'Cash',
     cash: '',
-    orderNum: loadOrderNum(),
+    orderNum: 1,
     view: 'order'
   };
 
@@ -463,42 +425,21 @@
     if (nameInput) {
       nameInput.addEventListener('input', function () {
         state.customerName = nameInput.value;
-        var chargeBtn = document.getElementById('chargeBtn');
-        var lines = cartLines();
-        var total = cartTotal();
-        var cashNum = parseFloat(state.cash) || 0;
-        var canCharge = lines.length > 0 && state.customerName.trim().length > 0 &&
-          (state.delivery === 'Pickup' || state.address.trim().length > 0) &&
-          state.fulfillDate.trim().length > 0 &&
-          cashNum >= total;
-        if (chargeBtn) chargeBtn.disabled = !canCharge;
+        checkCanCharge();
       });
     }
     var addrInput = document.getElementById('addr');
     if (addrInput) {
       addrInput.addEventListener('input', function () {
         state.address = addrInput.value;
-        var chargeBtn = document.getElementById('chargeBtn');
-        var lines = cartLines();
-        var total = cartTotal();
-        var cashNum = parseFloat(state.cash) || 0;
-        var canCharge = lines.length > 0 && state.customerName.trim().length > 0 &&
-          state.address.trim().length > 0 && state.fulfillDate.trim().length > 0 && cashNum >= total;
-        if (chargeBtn) chargeBtn.disabled = !canCharge;
+        checkCanCharge();
       });
     }
     var fulfillDateInput = document.getElementById('fulfillDate');
     if (fulfillDateInput) {
       fulfillDateInput.addEventListener('input', function () {
         state.fulfillDate = fulfillDateInput.value;
-        var chargeBtn = document.getElementById('chargeBtn');
-        var lines = cartLines();
-        var total = cartTotal();
-        var cashNum = parseFloat(state.cash) || 0;
-        var canCharge = lines.length > 0 && state.customerName.trim().length > 0 &&
-          (state.delivery === 'Pickup' || state.address.trim().length > 0) &&
-          state.fulfillDate.trim().length > 0 && cashNum >= total;
-        if (chargeBtn) chargeBtn.disabled = !canCharge;
+        checkCanCharge();
       });
     }
     var cashInput = document.getElementById('cashInput');
@@ -519,14 +460,22 @@
     });
   }
 
+  function checkCanCharge() {
+    var chargeBtn = document.getElementById('chargeBtn');
+    var lines = cartLines();
+    var total = cartTotal();
+    var cashNum = parseFloat(state.cash) || 0;
+    var canCharge = lines.length > 0 && state.customerName.trim().length > 0 &&
+      (state.delivery === 'Pickup' || state.address.trim().length > 0) &&
+      state.fulfillDate.trim().length > 0 && cashNum >= total;
+    if (chargeBtn) chargeBtn.disabled = !canCharge;
+  }
+
   function charge() {
     var lines = cartLines();
     var total = cartTotal();
     var cashNum = parseFloat(state.cash) || 0;
     if (lines.length === 0 || !state.customerName.trim()) return;
-    if (state.delivery === 'Delivery' && !state.address.trim()) return;
-    if (!state.fulfillDate.trim()) return;
-    if (cashNum < total) return;
 
     var order = {
       num: state.orderNum,
@@ -545,14 +494,7 @@
     if (window.FirebaseDB && window.FirebaseDB.db) {
       var fdb = window.FirebaseDB;
       fdb.addDoc(fdb.collection(fdb.db, "sales"), order);
-    } else {
-      salesList.unshift(order);
-      saveSalesLocal(salesList);
-      updateTotalTubCount();
     }
-
-    state.orderNum += 1;
-    saveOrderNum(state.orderNum);
 
     renderReceipt(order);
 
@@ -564,7 +506,6 @@
     state.payment = 'Cash';
     state.cash = '';
 
-    document.getElementById('orderNumPill').textContent = 'Order #' + String(state.orderNum).padStart(3, '0');
     showView('receipt');
   }
 
@@ -587,7 +528,7 @@
     html += '<div class="rrow"><span>Payment</span><span>' + order.payment + '</span></div>';
     html += '<div class="rrow"><span>Cash</span><span>' + peso(order.cash) + '</span></div>';
     html += '<div class="rrow"><span>Change</span><span>' + peso(order.change) + '</span></div>';
-    html += '<div class="thanks">Thanks for picking Wubber! \uD83C\uDF6E</div>';
+    html += '<div class="thanks">Thanks for picking Wubber! 🍮</div>';
     html += '<button class="charge-btn" id="newSaleBtn">Start new order</button>';
     html += '</div>';
     document.getElementById('receiptView').innerHTML = html;
@@ -615,7 +556,7 @@
     } else {
       salesList.forEach(function (o) {
         var t = new Date(o.time);
-        var itemsSummary = o.lines.map(function (l) { return l.qty + '\u00d7 ' + l.name; }).join(', ');
+        var itemsSummary = o.lines ? o.lines.map(function (l) { return l.qty + '\u00d7 ' + l.name; }).join(', ') : '';
         html += '<div class="order-item">';
         html += '<div class="top"><span class="oname">' + esc(o.name) + ' &middot; #' + String(o.num).padStart(3, '0') + '</span><span class="otime">' + t.toLocaleDateString() + ' ' + t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + '</span></div>';
         html += '<div class="odetail">' + esc(itemsSummary) + '</div>';
@@ -661,6 +602,7 @@
         html += '<div class="top"><span class="oname">' + esc(e.title) + '</span><span class="otime">' + t.toLocaleDateString() + '</span></div>';
         html += '<div class="otags"><span class="tag expense">' + esc(e.category) + '</span></div>';
         html += '<div style="display:flex;justify-content:flex-end;margin-top:6px;"><span class="ototal" style="color:#B34545;">-' + peso(e.amount) + '</span></div>';
+        html += '<div style="display:flex;justify-content:flex-end;margin-top:6px;"><span class="ototal" style="color:#B34545;">-' + peso(e.amount) + '</span></div>';
         html += '</div>';
       });
     }
@@ -688,10 +630,6 @@
       if (window.FirebaseDB && window.FirebaseDB.db) {
         var fdb = window.FirebaseDB;
         fdb.addDoc(fdb.collection(fdb.db, "expenses"), expenseData);
-      } else {
-        expenseList.unshift(expenseData);
-        saveExpensesLocal(expenseList);
-        renderExpenseView();
       }
     });
   }
@@ -720,7 +658,6 @@
     showView('expense');
   });
 
-  document.getElementById('orderNumPill').textContent = 'Order #' + String(state.orderNum).padStart(3, '0');
   renderOrderView();
   showView('order');
 })();
