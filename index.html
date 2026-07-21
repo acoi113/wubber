@@ -61,6 +61,29 @@
     font-weight: 700; padding: 7px 12px; border-radius: 10px; border: none;
   }
   .pill.active { background: #A9D3EA; color: #20425F; }
+  .pill.offline { background: #B34545; color: #fff; }
+  .pill.online { background: #3A8F5C; color: #fff; }
+
+  .stock-badge { font-size: 11px; font-weight: 800; padding: 3px 9px; border-radius: 999px; background: #EADFAF; color: #6B4A20; }
+  .stock-badge.low { background: #F8D7DA; color: #721C24; }
+  .stock-badge.out { background: #B34545; color: #fff; }
+
+  .filter-row { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+  .filter-btn { padding: 8px 14px; border-radius: 999px; border: 2px solid rgba(255,255,255,0.4); background: rgba(255,255,255,0.08); font-weight: 700; font-size: 12.5px; color: #F3F8FC; }
+  .filter-btn.selected { background: #FDFBF3; border-color: #FDFBF3; color: #3D6690; }
+
+  .tag.status-pending { background: #FBE8B8; color: #6B4A20; }
+  .tag.status-fulfilled { background: #C9EAD2; color: #245A34; }
+
+  .row-actions { display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end; }
+  .mini-btn { border: none; border-radius: 8px; padding: 6px 12px; font-weight: 800; font-size: 11.5px; }
+  .mini-btn.fulfill { background: #3A8F5C; color: #fff; }
+  .mini-btn.void { background: #B34545; color: #fff; }
+  .mini-btn.export { background: #3D6690; color: #fff; }
+
+  .stock-row { display: flex; align-items: center; justify-content: space-between; background: #fff; border-radius: 10px; padding: 8px 10px; margin-bottom: 8px; }
+  .stock-row .fn { font-weight: 700; font-size: 13.5px; color: #26374A; }
+  .stock-row input { width: 80px; padding: 6px 8px; }
 
   h1.title {
     color: #fff; font-size: 26px; font-weight: 800; margin: 4px 0 14px;
@@ -165,6 +188,7 @@
       </div>
     </div>
     <div class="headerRight">
+      <span class="pill" id="connStatusPill" style="display:none;"></span>
       <button class="pill" id="orderNumPill">Order #001</button>
       <button class="pill" id="navOrderBtn">New Order</button>
       <button class="pill" id="navSalesBtn">Sales Log</button>
@@ -181,7 +205,10 @@
 <!-- Firebase SDK -->
 <script type="module">
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-  import { getFirestore, collection, addDoc, onSnapshot, query, orderBy } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+  import {
+    getFirestore, collection, addDoc, onSnapshot, query, orderBy,
+    doc, updateDoc, deleteDoc, setDoc, increment
+  } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
   const firebaseConfig = {
     apiKey: "AIzaSyDg1npnQ-9LTIYPsG2098HbExxa9O4KDuY",
@@ -201,7 +228,10 @@
     console.warn("Firebase fallback active.", e);
   }
 
-  window.FirebaseDB = { db, addDoc, collection, onSnapshot, query, orderBy };
+  window.FirebaseDB = {
+    db, addDoc, collection, onSnapshot, query, orderBy,
+    doc, updateDoc, deleteDoc, setDoc, increment
+  };
 </script>
 
 <script>
@@ -215,6 +245,8 @@
 
   var salesList = [];
   var expenseList = [];
+  var inventory = {};
+  var state; // declared below, referenced by listeners
 
   function syncOrderCount() {
     var nextOrderNum = salesList.length + 1;
@@ -229,32 +261,61 @@
     if (tubEl) tubEl.textContent = totalTubs;
   }
 
+  function updateConnStatusPill() {
+    var pill = document.getElementById('connStatusPill');
+    if (!pill) return;
+    if (navigator.onLine) {
+      pill.style.display = 'none';
+    } else {
+      pill.style.display = '';
+      pill.className = 'pill offline';
+      pill.textContent = '\u26A0\uFE0F Offline \u2013 saving locally';
+    }
+  }
+  window.addEventListener('online', updateConnStatusPill);
+  window.addEventListener('offline', updateConnStatusPill);
+
   window.addEventListener('load', function() {
+    updateConnStatusPill();
     var checkInterval = setInterval(function() {
       if (window.FirebaseDB && window.FirebaseDB.db) {
         clearInterval(checkInterval);
         var fdb = window.FirebaseDB;
-        
+
         var qSales = fdb.query(fdb.collection(fdb.db, "sales"), fdb.orderBy("time", "desc"));
         fdb.onSnapshot(qSales, function(snapshot) {
           salesList = [];
-          snapshot.forEach(function(doc) { salesList.push(doc.data()); });
+          snapshot.forEach(function(doc) { salesList.push(Object.assign({ id: doc.id }, doc.data())); });
           syncOrderCount();
           if (state.view === 'sales') renderSalesView();
+        }, function(err) {
+          console.error('Sales sync error:', err);
+          alert('Could not load sales data: ' + err.message);
         });
 
         var qExpenses = fdb.query(fdb.collection(fdb.db, "expenses"), fdb.orderBy("time", "desc"));
         fdb.onSnapshot(qExpenses, function(snapshot) {
           expenseList = [];
-          snapshot.forEach(function(doc) { expenseList.push(doc.data()); });
+          snapshot.forEach(function(doc) { expenseList.push(Object.assign({ id: doc.id }, doc.data())); });
           if (state.view === 'expense') renderExpenseView();
           if (state.view === 'sales') renderSalesView();
+        }, function(err) {
+          console.error('Expense sync error:', err);
+          alert('Could not load expense data: ' + err.message);
+        });
+
+        fdb.onSnapshot(fdb.doc(fdb.db, "meta", "inventory"), function(docSnap) {
+          inventory = docSnap.exists() ? docSnap.data() : {};
+          if (state.view === 'order') renderOrderView();
+          if (state.view === 'sales') renderSalesView();
+        }, function(err) {
+          console.error('Inventory sync error:', err);
         });
       }
     }, 300);
   });
 
-  var state = {
+  state = {
     cart: {},
     customerName: '',
     delivery: 'Pickup',
@@ -263,7 +324,8 @@
     payment: 'Cash',
     cash: '',
     orderNum: 1,
-    view: 'order'
+    view: 'order',
+    salesFilter: 'all'
   };
 
   function peso(n) { return '\u20B1' + (n || 0).toFixed(2); }
@@ -274,6 +336,29 @@
     if (parts.length !== 3) return iso;
     var d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
     return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+
+  function isInRange(dateInput, range) {
+    if (range === 'all') return true;
+    var d = new Date(dateInput);
+    if (isNaN(d.getTime())) return true;
+    var now = new Date();
+    if (range === 'today') {
+      return d.toDateString() === now.toDateString();
+    }
+    if (range === 'week') {
+      var weekAgo = new Date(now);
+      weekAgo.setDate(now.getDate() - 7);
+      return d >= weekAgo && d <= now;
+    }
+    if (range === 'month') {
+      return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+    }
+    return true;
+  }
+
+  function getStock(flavorId) {
+    return (inventory && typeof inventory[flavorId] === 'number') ? inventory[flavorId] : null;
   }
 
   function cartLines() {
@@ -298,6 +383,16 @@
     var d = document.createElement('div');
     d.textContent = s == null ? '' : s;
     return d.innerHTML;
+  }
+
+  function withErr(promise, label) {
+    if (promise && promise.catch) {
+      promise.catch(function (err) {
+        console.error(label + ' failed:', err);
+        alert('Could not ' + label + ': ' + err.message);
+      });
+    }
+    return promise;
   }
 
   function renderOrderView() {
@@ -338,17 +433,24 @@
     html += '<div class="flavors">';
     FLAVORS.forEach(function (f) {
       var qty = state.cart[f.id] || 0;
+      var stock = getStock(f.id);
+      var outOfStock = stock !== null && stock <= 0;
+      var atStockLimit = stock !== null && qty >= stock;
       html += '<div class="flavor-card' + (qty ? ' has-qty' : '') + '">';
       html += '<div class="flavor-top">' + cupSVG(f.tone, f.swirl) + '<div class="price-pill">' + peso(f.price) + '</div></div>';
       html += '<h3>' + esc(f.name) + '</h3>';
       html += '<p>' + esc(f.blurb) + '</p>';
+      if (stock !== null) {
+        var badgeClass = outOfStock ? 'out' : (stock <= 5 ? 'low' : '');
+        html += '<div style="margin-bottom:10px;"><span class="stock-badge' + (badgeClass ? ' ' + badgeClass : '') + '">' + (outOfStock ? 'Out of stock' : stock + ' left') + '</span></div>';
+      }
       if (qty === 0) {
-        html += '<button class="add-btn" data-add="' + f.id + '">Add to order</button>';
+        html += '<button class="add-btn" data-add="' + f.id + '"' + (outOfStock ? ' disabled style="opacity:.5;"' : '') + '>' + (outOfStock ? 'Out of stock' : 'Add to order') + '</button>';
       } else {
         html += '<div class="qty-row">';
         html += '<button class="qty-btn qty-minus" data-remove="' + f.id + '">\u2212</button>';
         html += '<span style="font-weight:800;font-size:15px;">' + qty + '</span>';
-        html += '<button class="qty-btn qty-plus" data-add="' + f.id + '">+</button>';
+        html += '<button class="qty-btn qty-plus" data-add="' + f.id + '"' + (atStockLimit ? ' disabled style="opacity:.5;"' : '') + '>+</button>';
         html += '</div>';
       }
       html += '</div>';
@@ -394,8 +496,12 @@
     var root = document.getElementById('orderView');
     root.querySelectorAll('[data-add]').forEach(function (btn) {
       btn.addEventListener('click', function () {
+        if (btn.disabled) return;
         var id = btn.getAttribute('data-add');
-        state.cart[id] = (state.cart[id] || 0) + 1;
+        var stock = getStock(id);
+        var currentQty = state.cart[id] || 0;
+        if (stock !== null && currentQty >= stock) return;
+        state.cart[id] = currentQty + 1;
         renderOrderView();
       });
     });
@@ -488,12 +594,21 @@
       total: total,
       cash: cashNum,
       change: cashNum - total,
+      status: 'Pending',
       time: new Date().toISOString()
     };
 
     if (window.FirebaseDB && window.FirebaseDB.db) {
       var fdb = window.FirebaseDB;
-      fdb.addDoc(fdb.collection(fdb.db, "sales"), order);
+      withErr(fdb.addDoc(fdb.collection(fdb.db, "sales"), order), 'save the order');
+
+      var stockUpdates = {};
+      lines.forEach(function (l) {
+        if (getStock(l.id) !== null) stockUpdates[l.id] = fdb.increment(-l.qty);
+      });
+      if (Object.keys(stockUpdates).length > 0) {
+        withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "inventory"), stockUpdates, { merge: true }), 'update stock');
+      }
     }
 
     renderReceipt(order);
@@ -539,37 +654,165 @@
   }
 
   function renderSalesView() {
-    var totalRevenue = salesList.reduce(function (s, o) { return s + o.total; }, 0);
-    var totalExpenses = expenseList.reduce(function (s, e) { return s + e.amount; }, 0);
+    var filter = state.salesFilter;
+    var filteredSales = salesList.filter(function (o) { return isInRange(o.time, filter); });
+    var filteredExpenses = expenseList.filter(function (e) { return isInRange(e.purchaseDate || e.time, filter); });
+
+    var totalRevenue = filteredSales.reduce(function (s, o) { return s + o.total; }, 0);
+    var totalExpenses = filteredExpenses.reduce(function (s, e) { return s + e.amount; }, 0);
     var netProfit = totalRevenue - totalExpenses;
 
     var html = '<h1 class="title heading">Sales & Budget Dashboard</h1>';
+
+    html += '<div class="filter-row">';
+    [['all', 'All Time'], ['today', 'Today'], ['week', 'This Week'], ['month', 'This Month']].forEach(function (f) {
+      html += '<button class="filter-btn' + (filter === f[0] ? ' selected' : '') + '" data-filter="' + f[0] + '">' + f[1] + '</button>';
+    });
+    html += '<button class="filter-btn mini-btn export" id="exportCsvBtn" style="margin-left:auto;">\u2B07 Export CSV</button>';
+    html += '</div>';
+
     html += '<div class="sales-summary">';
     html += '<div class="sum-card"><div class="k">Total Sales</div><div class="v">' + peso(totalRevenue) + '</div></div>';
     html += '<div class="sum-card"><div class="k">Total Expenses</div><div class="v" style="color:#B34545;">' + peso(totalExpenses) + '</div></div>';
     html += '<div class="sum-card"><div class="k">Net Profit</div><div class="v" style="color:' + (netProfit < 0 ? '#B34545' : '#3A8F5C') + ';">' + peso(netProfit) + '</div></div>';
-    html += '<div class="sum-card"><div class="k">Orders</div><div class="v">' + salesList.length + '</div></div>';
+    html += '<div class="sum-card"><div class="k">Orders</div><div class="v">' + filteredSales.length + '</div></div>';
     html += '</div>';
 
-    if (salesList.length === 0) {
-      html += '<div class="empty">No sales recorded yet. Charge an order to see it here.</div>';
+    html += '<div class="field-card">';
+    html += '<h2 class="heading" style="font-size:17px;color:#3D6690;margin:0 0 10px;">Flavor Stock</h2>';
+    FLAVORS.forEach(function (f) {
+      var stock = getStock(f.id);
+      html += '<div class="stock-row">';
+      html += '<span class="fn">' + esc(f.name) + '</span>';
+      html += '<div style="display:flex;align-items:center;gap:8px;">';
+      html += '<input type="number" min="0" data-stock-input="' + f.id + '" placeholder="' + (stock === null ? 'not tracked' : stock) + '" />';
+      html += '<button class="mini-btn fulfill" data-set-stock="' + f.id + '">Set</button>';
+      html += '</div></div>';
+    });
+    html += '<div class="hint" style="margin:6px 0 0;">Set a stock number to start tracking a flavor. Leave blank / untracked flavors have unlimited stock.</div>';
+    html += '</div>';
+
+    if (filteredSales.length === 0) {
+      html += '<div class="empty">No sales recorded for this period.</div>';
     } else {
-      salesList.forEach(function (o) {
+      filteredSales.forEach(function (o) {
         var t = new Date(o.time);
         var itemsSummary = o.lines ? o.lines.map(function (l) { return l.qty + '\u00d7 ' + l.name; }).join(', ') : '';
+        var status = o.status || 'Fulfilled';
         html += '<div class="order-item">';
         html += '<div class="top"><span class="oname">' + esc(o.name) + ' &middot; #' + String(o.num).padStart(3, '0') + '</span><span class="otime">' + t.toLocaleDateString() + ' ' + t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + '</span></div>';
         html += '<div class="odetail">' + esc(itemsSummary) + '</div>';
         if (o.delivery === 'Delivery' && o.address) {
           html += '<div class="odetail">Deliver to: ' + esc(o.address) + '</div>';
         }
-        html += '<div class="otags"><span class="tag">' + o.delivery + '</span><span class="tag pay">' + o.payment + '</span><span class="tag">' + fmtDate(o.fulfillDate) + '</span></div>';
+        html += '<div class="otags"><span class="tag">' + o.delivery + '</span><span class="tag pay">' + o.payment + '</span><span class="tag">' + fmtDate(o.fulfillDate) + '</span><span class="tag status-' + status.toLowerCase() + '">' + status + '</span></div>';
         html += '<div style="display:flex;justify-content:flex-end;margin-top:6px;"><span class="ototal">' + peso(o.total) + '</span></div>';
+        html += '<div class="row-actions">';
+        if (status === 'Pending') {
+          html += '<button class="mini-btn fulfill" data-fulfill="' + o.id + '">Mark Fulfilled</button>';
+        }
+        html += '<button class="mini-btn void" data-void-order="' + o.id + '">Void</button>';
+        html += '</div>';
         html += '</div>';
       });
     }
 
     document.getElementById('salesView').innerHTML = html;
+    wireSalesView();
+  }
+
+  function wireSalesView() {
+    var root = document.getElementById('salesView');
+    var fdb = window.FirebaseDB;
+
+    root.querySelectorAll('[data-filter]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        state.salesFilter = btn.getAttribute('data-filter');
+        renderSalesView();
+      });
+    });
+
+    root.querySelectorAll('[data-set-stock]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-set-stock');
+        var input = root.querySelector('[data-stock-input="' + id + '"]');
+        var val = parseInt(input.value, 10);
+        if (isNaN(val) || val < 0) { alert('Enter a valid stock number (0 or more).'); return; }
+        if (fdb && fdb.db) {
+          var update = {};
+          update[id] = val;
+          withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "inventory"), update, { merge: true }), 'update stock');
+        }
+      });
+    });
+
+    root.querySelectorAll('[data-fulfill]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-fulfill');
+        if (fdb && fdb.db) {
+          withErr(fdb.updateDoc(fdb.doc(fdb.db, "sales", id), { status: 'Fulfilled' }), 'mark the order fulfilled');
+        }
+      });
+    });
+
+    root.querySelectorAll('[data-void-order]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-void-order');
+        var order = salesList.find(function (o) { return o.id === id; });
+        if (!confirm('Void order #' + (order ? String(order.num).padStart(3, '0') : '') + '? This cannot be undone.')) return;
+        if (fdb && fdb.db) {
+          withErr(fdb.deleteDoc(fdb.doc(fdb.db, "sales", id)), 'void the order');
+          if (order && order.lines) {
+            var restock = {};
+            order.lines.forEach(function (l) {
+              if (getStock(l.id) !== null) restock[l.id] = fdb.increment(l.qty);
+            });
+            if (Object.keys(restock).length > 0) {
+              withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "inventory"), restock, { merge: true }), 'restock inventory');
+            }
+          }
+        }
+      });
+    });
+
+    var exportBtn = document.getElementById('exportCsvBtn');
+    if (exportBtn) exportBtn.addEventListener('click', exportCsv);
+  }
+
+  function csvEscape(v) {
+    var s = String(v == null ? '' : v);
+    if (/[",\n]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+    return s;
+  }
+
+  function exportCsv() {
+    var filter = state.salesFilter;
+    var filteredSales = salesList.filter(function (o) { return isInRange(o.time, filter); });
+    var filteredExpenses = expenseList.filter(function (e) { return isInRange(e.purchaseDate || e.time, filter); });
+
+    var lines = [];
+    lines.push('SALES');
+    lines.push(['Order #', 'Date', 'Customer', 'Items', 'Delivery', 'Payment', 'Status', 'Total'].join(','));
+    filteredSales.forEach(function (o) {
+      var items = o.lines ? o.lines.map(function (l) { return l.qty + 'x ' + l.name; }).join('; ') : '';
+      lines.push([String(o.num).padStart(3, '0'), new Date(o.time).toLocaleDateString(), o.name, items, o.delivery, o.payment, o.status || 'Fulfilled', o.total.toFixed(2)].map(csvEscape).join(','));
+    });
+    lines.push('');
+    lines.push('EXPENSES');
+    lines.push(['Date', 'Description', 'Category', 'Amount'].join(','));
+    filteredExpenses.forEach(function (e) {
+      lines.push([e.purchaseDate ? fmtDate(e.purchaseDate) : new Date(e.time).toLocaleDateString(), e.title, e.category, e.amount.toFixed(2)].map(csvEscape).join(','));
+    });
+
+    var blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = 'wubber-sales-' + filter + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   }
 
   function renderExpenseView() {
@@ -588,6 +831,9 @@
     html += '<label class="label" style="margin-top:12px;" for="expAmount">Amount (\u20B1)</label>';
     html += '<input type="number" id="expAmount" placeholder="0.00" />';
 
+    html += '<label class="label" style="margin-top:12px;" for="expDate">Date Purchased</label>';
+    html += '<input type="date" id="expDate" value="' + new Date().toISOString().slice(0,10) + '" />';
+
     html += '<button class="charge-btn" id="saveExpenseBtn">Save Expense</button>';
     html += '</div></div>';
 
@@ -597,12 +843,12 @@
       html += '<div class="empty">No expenses logged yet.</div>';
     } else {
       expenseList.forEach(function (e) {
-        var t = new Date(e.time);
+        var dateLabel = e.purchaseDate ? fmtDate(e.purchaseDate) : new Date(e.time).toLocaleDateString();
         html += '<div class="order-item">';
-        html += '<div class="top"><span class="oname">' + esc(e.title) + '</span><span class="otime">' + t.toLocaleDateString() + '</span></div>';
+        html += '<div class="top"><span class="oname">' + esc(e.title) + '</span><span class="otime">' + dateLabel + '</span></div>';
         html += '<div class="otags"><span class="tag expense">' + esc(e.category) + '</span></div>';
         html += '<div style="display:flex;justify-content:flex-end;margin-top:6px;"><span class="ototal" style="color:#B34545;">-' + peso(e.amount) + '</span></div>';
-        html += '<div style="display:flex;justify-content:flex-end;margin-top:6px;"><span class="ototal" style="color:#B34545;">-' + peso(e.amount) + '</span></div>';
+        html += '<div class="row-actions"><button class="mini-btn void" data-delete-expense="' + e.id + '">Delete</button></div>';
         html += '</div>';
       });
     }
@@ -610,12 +856,24 @@
 
     document.getElementById('expenseView').innerHTML = html;
 
+    document.getElementById('expenseView').querySelectorAll('[data-delete-expense]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-delete-expense');
+        if (!confirm('Delete this expense? This cannot be undone.')) return;
+        if (window.FirebaseDB && window.FirebaseDB.db) {
+          var fdb = window.FirebaseDB;
+          withErr(fdb.deleteDoc(fdb.doc(fdb.db, "expenses", id)), 'delete the expense');
+        }
+      });
+    });
+
     document.getElementById('saveExpenseBtn').addEventListener('click', function() {
       var title = document.getElementById('expTitle').value.trim();
       var category = document.getElementById('expCategory').value;
       var amount = parseFloat(document.getElementById('expAmount').value) || 0;
+      var purchaseDate = document.getElementById('expDate').value;
 
-      if(!title || amount <= 0) {
+      if(!title || amount <= 0 || !purchaseDate) {
         alert('Please fill out all fields correctly.');
         return;
       }
@@ -624,12 +882,13 @@
         title: title,
         category: category,
         amount: amount,
+        purchaseDate: purchaseDate,
         time: new Date().toISOString()
       };
 
       if (window.FirebaseDB && window.FirebaseDB.db) {
         var fdb = window.FirebaseDB;
-        fdb.addDoc(fdb.collection(fdb.db, "expenses"), expenseData);
+        withErr(fdb.addDoc(fdb.collection(fdb.db, "expenses"), expenseData), 'save the expense');
       }
     });
   }
