@@ -689,7 +689,7 @@
 
   function renderSalesView() {
     var filter = state.salesFilter;
-    var filteredSales = salesList.filter(function (o) { return isInRange(o.time, filter); });
+    var filteredSales = salesList.filter(function (o) { return isInRange(o.fulfillDate || o.time, filter); });
     var filteredExpenses = expenseList.filter(function (e) { return isInRange(e.purchaseDate || e.time, filter); });
 
     var totalRevenue = filteredSales.reduce(function (s, o) { return isFulfilled(o) ? s + o.total : s; }, 0);
@@ -732,17 +732,16 @@
       html += '<div class="empty">No sales recorded for this period.</div>';
     } else {
       filteredSales.forEach(function (o) {
-        var t = new Date(o.time);
         var itemsSummary = o.lines ? o.lines.map(function (l) { return l.qty + '\u00d7 ' + l.name; }).join(', ') : '';
         var status = o.status || 'Fulfilled';
         var fulfilled = status === 'Fulfilled';
         html += '<div class="order-item">';
-        html += '<div class="top"><span class="oname">' + esc(o.name) + ' &middot; #' + String(o.num).padStart(3, '0') + '</span><span class="otime">' + t.toLocaleDateString() + ' ' + t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + '</span></div>';
+        html += '<div class="top"><span class="oname">' + esc(o.name) + ' &middot; #' + String(o.num).padStart(3, '0') + '</span><span class="otime">' + fmtDate(o.fulfillDate) + '</span></div>';
         html += '<div class="odetail">' + esc(itemsSummary) + '</div>';
         if (o.delivery === 'Delivery' && o.address) {
           html += '<div class="odetail">Deliver to: ' + esc(o.address) + '</div>';
         }
-        html += '<div class="otags"><span class="tag">' + o.delivery + '</span>' + (o.payment ? '<span class="tag pay">' + o.payment + '</span>' : '') + '<span class="tag">' + fmtDate(o.fulfillDate) + '</span><span class="tag status-' + status.toLowerCase().replace(/\s+/g, '-') + '">' + status + '</span></div>';
+        html += '<div class="otags"><span class="tag">' + o.delivery + '</span>' + (o.payment ? '<span class="tag pay">' + o.payment + '</span>' : '') + '<span class="tag status-' + status.toLowerCase().replace(/\s+/g, '-') + '">' + status + '</span></div>';
         html += '<div style="display:flex;justify-content:flex-end;margin-top:6px;"><span class="ototal">' + peso(o.total) + '</span></div>';
 
         if (state.fulfillingId === o.id) {
@@ -886,7 +885,7 @@
 
   function exportCsv() {
     var filter = state.salesFilter;
-    var filteredSales = salesList.filter(function (o) { return isInRange(o.time, filter); });
+    var filteredSales = salesList.filter(function (o) { return isInRange(o.fulfillDate || o.time, filter); });
     var filteredExpenses = expenseList.filter(function (e) { return isInRange(e.purchaseDate || e.time, filter); });
 
     var lines = [];
@@ -894,7 +893,7 @@
     lines.push(['Order #', 'Date', 'Customer', 'Items', 'Delivery', 'Payment', 'Status', 'Total'].join(','));
     filteredSales.forEach(function (o) {
       var items = o.lines ? o.lines.map(function (l) { return l.qty + 'x ' + l.name; }).join('; ') : '';
-      lines.push([String(o.num).padStart(3, '0'), new Date(o.time).toLocaleDateString(), o.name, items, o.delivery, o.payment, o.status || 'Fulfilled', o.total.toFixed(2)].map(csvEscape).join(','));
+      lines.push([String(o.num).padStart(3, '0'), fmtDate(o.fulfillDate) || new Date(o.time).toLocaleDateString(), o.name, items, o.delivery, o.payment, o.status || 'Fulfilled', o.total.toFixed(2)].map(csvEscape).join(','));
     });
     lines.push('');
     lines.push('EXPENSES');
