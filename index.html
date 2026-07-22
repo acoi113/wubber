@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8D%8C%3C/text%3E%3C/svg%3E" />
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -691,6 +692,7 @@
     var filteredExpenses = expenseList.filter(function (e) { return isInRange(e.purchaseDate || e.time, filter); });
 
     var totalRevenue = filteredSales.reduce(function (s, o) { return isFulfilled(o) ? s + o.total : s; }, 0);
+    var totalPending = filteredSales.reduce(function (s, o) { return isFulfilled(o) ? s : s + o.total; }, 0);
     var totalExpenses = filteredExpenses.reduce(function (s, e) { return s + e.amount; }, 0);
     var netProfit = totalRevenue - totalExpenses;
 
@@ -705,6 +707,7 @@
 
     html += '<div class="sales-summary">';
     html += '<div class="sum-card"><div class="k">Total Sales</div><div class="v">' + peso(totalRevenue) + '</div></div>';
+    html += '<div class="sum-card"><div class="k">Pending (Pre-orders)</div><div class="v" style="color:#8A5A3A;">' + peso(totalPending) + '</div></div>';
     html += '<div class="sum-card"><div class="k">Total Expenses</div><div class="v" style="color:#B34545;">' + peso(totalExpenses) + '</div></div>';
     html += '<div class="sum-card"><div class="k">Net Profit</div><div class="v" style="color:' + (netProfit < 0 ? '#B34545' : '#3A8F5C') + ';">' + peso(netProfit) + '</div></div>';
     html += '<div class="sum-card"><div class="k">Orders</div><div class="v">' + filteredSales.length + '</div></div>';
