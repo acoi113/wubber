@@ -244,6 +244,7 @@
 
   var salesList = [];
   var expenseList = [];
+  var cashoutList = [];
   var state; // declared below, referenced by listeners
 
   function syncOrderCount() {
@@ -302,6 +303,17 @@
           console.error('Expense sync error:', err);
           alert('Could not load expense data: ' + err.message);
         });
+
+        var qCashouts = fdb.query(fdb.collection(fdb.db, "cashouts"), fdb.orderBy("time", "desc"));
+        fdb.onSnapshot(qCashouts, function(snapshot) {
+          cashoutList = [];
+          snapshot.forEach(function(doc) { cashoutList.push(Object.assign({ id: doc.id }, doc.data())); });
+          if (state.view === 'expense') renderExpenseView();
+          if (state.view === 'sales') renderSalesView();
+        }, function(err) {
+          console.error('Cash out sync error:', err);
+          alert('Could not load cash out data: ' + err.message);
+        });
       }
     }, 300);
   });
@@ -314,11 +326,17 @@
     fulfillDate: '',
     payment: 'Cash',
     cash: '',
+    orderNotes: '',
     orderNum: 1,
     view: 'order',
     salesFilter: 'all',
+    salesSearch: '',
     fulfillingId: null,
-    fulfillDraft: { payment: 'Cash', cash: '' }
+    fulfillDraft: { payment: 'Cash', cash: '' },
+    salesExpanded: {},
+    expenseExpanded: {},
+    cashoutExpanded: {},
+    expenseSubView: 'expenses'
   };
 
   function peso(n) { return '\u20B1' + (n || 0).toFixed(2); }
@@ -357,6 +375,19 @@
       return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
     }
     return true;
+  }
+
+  function monthKeyOf(dateInput) {
+    var d = parseLocalDate(dateInput);
+    if (isNaN(d.getTime())) return 'unknown';
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+  }
+
+  function monthLabel(key) {
+    if (key === 'unknown') return 'Unknown date';
+    var parts = key.split('-');
+    var d = new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, 1);
+    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'long' });
   }
 
   function todayStr() {
@@ -494,6 +525,9 @@
       html += '<div class="total-row" style="border-top:none;padding-top:8px;"><span class="lbl" style="font-size:13.5px;">Change</span><span style="font-weight:800;color:' + (change < 0 ? '#B34545' : '#3A8F5C') + ';font-size:15px;">' + peso(Math.max(change, 0) || 0) + '</span></div>';
     }
 
+    html += '<label class="label" style="margin-top:12px;" for="orderNotesInput">Notes (optional)</label>';
+    html += '<textarea id="orderNotesInput" rows="2" placeholder="e.g., no toppings, allergic to nuts">' + esc(state.orderNotes) + '</textarea>';
+
     html += '<button class="charge-btn" id="chargeBtn"' + (canCharge ? '' : ' disabled') + '>' + (isPreOrder ? 'Save Pre-order' : 'Charge') + ' ' + (lines.length ? peso(total) : '') + '</button>';
     if (lines.length > 0) {
       html += '<button class="clear-btn" id="clearBtn">Clear order</button>';
@@ -566,6 +600,12 @@
         if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
       });
     }
+    var orderNotesInput = document.getElementById('orderNotesInput');
+    if (orderNotesInput) {
+      orderNotesInput.addEventListener('input', function () {
+        state.orderNotes = orderNotesInput.value;
+      });
+    }
     var chargeBtn = document.getElementById('chargeBtn');
     if (chargeBtn) chargeBtn.addEventListener('click', charge);
     var clearBtn = document.getElementById('clearBtn');
@@ -606,6 +646,7 @@
       cash: isPreOrder ? null : cashNum,
       change: isPreOrder ? null : (cashNum - total),
       status: isPreOrder ? 'Pre-order' : 'Fulfilled',
+      notes: state.orderNotes.trim() || null,
       time: new Date().toISOString()
     };
 
@@ -623,6 +664,7 @@
     state.fulfillDate = '';
     state.payment = 'Cash';
     state.cash = '';
+    state.orderNotes = '';
 
     showView('receipt');
   }
@@ -651,6 +693,9 @@
       html += '<div class="rrow"><span>Change</span><span>' + peso(order.change) + '</span></div>';
     }
     html += '<div class="thanks">Thanks for picking Wubber! 🍮</div>';
+    if (order.notes) {
+      html += '<div class="rline" style="margin-top:6px;color:#8A8A78;"><strong>Note:</strong> ' + esc(order.notes) + '</div>';
+    }
     html += '<button class="charge-btn" id="newSaleBtn">Start new order</button>';
     html += '</div>';
     document.getElementById('receiptView').innerHTML = html;
@@ -660,15 +705,64 @@
     });
   }
 
+  function renderOrderCard(o) {
+    var itemsSummary = o.lines ? o.lines.map(function (l) { return l.qty + '\u00d7 ' + l.name; }).join(', ') : '';
+    var status = o.status || 'Fulfilled';
+    var fulfilled = status === 'Fulfilled';
+    var html = '<div class="order-item">';
+    html += '<div class="top"><span class="oname">' + esc(o.name) + ' &middot; #' + String(o.num).padStart(3, '0') + '</span><span class="otime">' + fmtDate(o.fulfillDate) + '</span></div>';
+    html += '<div class="odetail">' + esc(itemsSummary) + '</div>';
+    if (o.delivery === 'Delivery' && o.address) {
+      html += '<div class="odetail">Deliver to: ' + esc(o.address) + '</div>';
+    }
+    if (o.notes) {
+      html += '<div class="odetail" style="font-style:italic;">Note: ' + esc(o.notes) + '</div>';
+    }
+    html += '<div class="otags"><span class="tag">' + o.delivery + '</span>' + (o.payment ? '<span class="tag pay">' + o.payment + '</span>' : '') + '<span class="tag status-' + status.toLowerCase().replace(/\s+/g, '-') + '">' + status + '</span></div>';
+    html += '<div style="display:flex;justify-content:flex-end;margin-top:6px;"><span class="ototal">' + peso(o.total) + '</span></div>';
+
+    if (state.fulfillingId === o.id) {
+      var cashNum = parseFloat(state.fulfillDraft.cash) || 0;
+      html += '<div class="fulfill-form">';
+      html += '<label class="label">Payment method received</label>';
+      html += '<div class="pay-grid">';
+      PAYMENTS.forEach(function (p) {
+        html += '<button class="pay-btn' + (state.fulfillDraft.payment === p ? ' selected' : '') + '" data-fulfill-payment="' + p + '">' + p + '</button>';
+      });
+      html += '</div>';
+      html += '<label class="label" style="margin-top:10px;">Cash received</label>';
+      html += '<input type="text" inputmode="decimal" id="fulfillCashInput" placeholder="0.00" value="' + esc(state.fulfillDraft.cash) + '" />';
+      html += '<div class="hint" style="margin:6px 0;">Change: ' + peso(Math.max(cashNum - o.total, 0)) + '</div>';
+      html += '<div class="row-actions">';
+      html += '<button class="mini-btn void" data-cancel-fulfill="1">Cancel</button>';
+      html += '<button class="mini-btn fulfill" data-confirm-fulfill="' + o.id + '"' + (cashNum >= o.total ? '' : ' disabled style="opacity:.5;"') + '>Confirm Fulfilled</button>';
+      html += '</div>';
+      html += '</div>';
+    } else {
+      html += '<div class="row-actions">';
+      if (!fulfilled) {
+        html += '<button class="mini-btn fulfill" data-start-fulfill="' + o.id + '">Mark Fulfilled</button>';
+      }
+      html += '<button class="mini-btn void" data-void-order="' + o.id + '">Void</button>';
+      html += '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
   function renderSalesView() {
     var filter = state.salesFilter;
+    var searchTerm = state.salesSearch.trim().toLowerCase();
     var filteredSales = salesList.filter(function (o) { return !isFulfilled(o) || isInRange(o.fulfillDate || o.time, filter); });
     var filteredExpenses = expenseList.filter(function (e) { return isInRange(e.purchaseDate || e.time, filter); });
+    var filteredCashouts = cashoutList.filter(function (c) { return isInRange(c.purchaseDate || c.time, filter); });
 
     var totalRevenue = filteredSales.reduce(function (s, o) { return isFulfilled(o) ? s + o.total : s; }, 0);
     var totalPending = filteredSales.reduce(function (s, o) { return isFulfilled(o) ? s : s + o.total; }, 0);
     var totalExpenses = filteredExpenses.reduce(function (s, e) { return s + e.amount; }, 0);
+    var totalCashOut = filteredCashouts.reduce(function (s, c) { return s + c.amount; }, 0);
     var netProfit = totalRevenue - totalExpenses;
+    var availableBalance = netProfit - totalCashOut;
 
     var paymentTotals = {};
     PAYMENTS.forEach(function (p) { paymentTotals[p] = 0; });
@@ -692,6 +786,8 @@
     html += '<div class="sum-card"><div class="k">Pending (Pre-orders)</div><div class="v" style="color:#8A5A3A;">' + peso(totalPending) + '</div></div>';
     html += '<div class="sum-card"><div class="k">Total Expenses</div><div class="v" style="color:#B34545;">' + peso(totalExpenses) + '</div></div>';
     html += '<div class="sum-card"><div class="k">Net Profit</div><div class="v" style="color:' + (netProfit < 0 ? '#B34545' : '#3A8F5C') + ';">' + peso(netProfit) + '</div></div>';
+    html += '<div class="sum-card"><div class="k">Cash Withdrawn</div><div class="v" style="color:#8A5A3A;">' + peso(totalCashOut) + '</div></div>';
+    html += '<div class="sum-card"><div class="k">Available Balance</div><div class="v" style="color:' + (availableBalance < 0 ? '#B34545' : '#3A8F5C') + ';">' + peso(availableBalance) + '</div></div>';
     html += '<div class="sum-card"><div class="k">Orders</div><div class="v">' + filteredSales.length + '</div></div>';
     html += '</div>';
 
@@ -705,48 +801,40 @@
     });
     html += '</div>';
 
-    if (filteredSales.length === 0) {
-      html += '<div class="empty">No sales recorded for this period.</div>';
-    } else {
-      filteredSales.forEach(function (o) {
-        var itemsSummary = o.lines ? o.lines.map(function (l) { return l.qty + '\u00d7 ' + l.name; }).join(', ') : '';
-        var status = o.status || 'Fulfilled';
-        var fulfilled = status === 'Fulfilled';
-        html += '<div class="order-item">';
-        html += '<div class="top"><span class="oname">' + esc(o.name) + ' &middot; #' + String(o.num).padStart(3, '0') + '</span><span class="otime">' + fmtDate(o.fulfillDate) + '</span></div>';
-        html += '<div class="odetail">' + esc(itemsSummary) + '</div>';
-        if (o.delivery === 'Delivery' && o.address) {
-          html += '<div class="odetail">Deliver to: ' + esc(o.address) + '</div>';
-        }
-        html += '<div class="otags"><span class="tag">' + o.delivery + '</span>' + (o.payment ? '<span class="tag pay">' + o.payment + '</span>' : '') + '<span class="tag status-' + status.toLowerCase().replace(/\s+/g, '-') + '">' + status + '</span></div>';
-        html += '<div style="display:flex;justify-content:flex-end;margin-top:6px;"><span class="ototal">' + peso(o.total) + '</span></div>';
+    html += '<input type="text" id="salesSearchInput" placeholder="\uD83D\uDD0D Search by customer name" value="' + esc(state.salesSearch) + '" style="margin-bottom:14px;" />';
 
-        if (state.fulfillingId === o.id) {
-          var cashNum = parseFloat(state.fulfillDraft.cash) || 0;
-          html += '<div class="fulfill-form">';
-          html += '<label class="label">Payment method received</label>';
-          html += '<div class="pay-grid">';
-          PAYMENTS.forEach(function (p) {
-            html += '<button class="pay-btn' + (state.fulfillDraft.payment === p ? ' selected' : '') + '" data-fulfill-payment="' + p + '">' + p + '</button>';
-          });
-          html += '</div>';
-          html += '<label class="label" style="margin-top:10px;">Cash received</label>';
-          html += '<input type="text" inputmode="decimal" id="fulfillCashInput" placeholder="0.00" value="' + esc(state.fulfillDraft.cash) + '" />';
-          html += '<div class="hint" style="margin:6px 0;">Change: ' + peso(Math.max(cashNum - o.total, 0)) + '</div>';
-          html += '<div class="row-actions">';
-          html += '<button class="mini-btn void" data-cancel-fulfill="1">Cancel</button>';
-          html += '<button class="mini-btn fulfill" data-confirm-fulfill="' + o.id + '"' + (cashNum >= o.total ? '' : ' disabled style="opacity:.5;"') + '>Confirm Fulfilled</button>';
-          html += '</div>';
-          html += '</div>';
-        } else {
-          html += '<div class="row-actions">';
-          if (!fulfilled) {
-            html += '<button class="mini-btn fulfill" data-start-fulfill="' + o.id + '">Mark Fulfilled</button>';
-          }
-          html += '<button class="mini-btn void" data-void-order="' + o.id + '">Void</button>';
-          html += '</div>';
+    var matchesSearch = function (o) { return !searchTerm || o.name.toLowerCase().indexOf(searchTerm) !== -1; };
+    var preOrders = filteredSales.filter(function (o) { return !isFulfilled(o) && matchesSearch(o); })
+      .sort(function (a, b) { return (a.fulfillDate || '').localeCompare(b.fulfillDate || ''); });
+    var fulfilledOrders = filteredSales.filter(function (o) { return isFulfilled(o) && matchesSearch(o); });
+
+    if (preOrders.length > 0) {
+      html += '<h2 class="heading" style="font-size:16px;color:#8A5A3A;margin:0 0 8px;">\u23F3 Pending Pre-orders (' + preOrders.length + ')</h2>';
+      preOrders.forEach(function (o) { html += renderOrderCard(o); });
+    }
+
+    html += '<h2 class="heading" style="font-size:16px;color:#3D6690;margin:16px 0 8px;">Fulfilled Orders</h2>';
+    if (fulfilledOrders.length === 0) {
+      html += '<div class="empty">No fulfilled sales found.</div>';
+    } else {
+      var groups = {};
+      fulfilledOrders.forEach(function (o) {
+        var key = monthKeyOf(o.fulfillDate || o.time);
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(o);
+      });
+      var keys = Object.keys(groups).sort().reverse();
+      keys.forEach(function (key) {
+        var items = groups[key];
+        var groupTotal = items.reduce(function (s, o) { return s + o.total; }, 0);
+        var expanded = state.salesExpanded.hasOwnProperty(key) ? state.salesExpanded[key] : (key === monthKeyOf(todayStr()));
+        html += '<button class="month-toggle" data-toggle-sales-month="' + key + '" style="width:100%;display:flex;justify-content:space-between;align-items:center;background:rgba(255,255,255,0.12);border:none;border-radius:10px;padding:10px 14px;margin-bottom:8px;">';
+        html += '<span style="font-weight:800;color:#F3F8FC;font-size:14.5px;">' + (expanded ? '\u25BC ' : '\u25B6 ') + monthLabel(key) + ' (' + items.length + ')</span>';
+        html += '<span style="font-weight:800;color:#F3F8FC;">' + peso(groupTotal) + '</span>';
+        html += '</button>';
+        if (expanded) {
+          items.forEach(function (o) { html += renderOrderCard(o); });
         }
-        html += '</div>';
       });
     }
 
@@ -761,6 +849,25 @@
     root.querySelectorAll('[data-filter]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         state.salesFilter = btn.getAttribute('data-filter');
+        renderSalesView();
+      });
+    });
+
+    var salesSearchInput = document.getElementById('salesSearchInput');
+    if (salesSearchInput) {
+      salesSearchInput.addEventListener('input', function () {
+        state.salesSearch = salesSearchInput.value;
+        renderSalesView();
+        var el = document.getElementById('salesSearchInput');
+        if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+      });
+    }
+
+    root.querySelectorAll('[data-toggle-sales-month]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var key = btn.getAttribute('data-toggle-sales-month');
+        var current = state.salesExpanded.hasOwnProperty(key) ? state.salesExpanded[key] : (key === monthKeyOf(todayStr()));
+        state.salesExpanded[key] = !current;
         renderSalesView();
       });
     });
@@ -841,19 +948,26 @@
     var filter = state.salesFilter;
     var filteredSales = salesList.filter(function (o) { return !isFulfilled(o) || isInRange(o.fulfillDate || o.time, filter); });
     var filteredExpenses = expenseList.filter(function (e) { return isInRange(e.purchaseDate || e.time, filter); });
+    var filteredCashouts = cashoutList.filter(function (c) { return isInRange(c.purchaseDate || c.time, filter); });
 
     var lines = [];
     lines.push('SALES');
-    lines.push(['Order #', 'Date', 'Customer', 'Items', 'Delivery', 'Payment', 'Status', 'Total'].join(','));
+    lines.push(['Order #', 'Date', 'Customer', 'Items', 'Delivery', 'Payment', 'Status', 'Total', 'Notes'].join(','));
     filteredSales.forEach(function (o) {
       var items = o.lines ? o.lines.map(function (l) { return l.qty + 'x ' + l.name; }).join('; ') : '';
-      lines.push([String(o.num).padStart(3, '0'), fmtDate(o.fulfillDate) || new Date(o.time).toLocaleDateString(), o.name, items, o.delivery, o.payment, o.status || 'Fulfilled', o.total.toFixed(2)].map(csvEscape).join(','));
+      lines.push([String(o.num).padStart(3, '0'), fmtDate(o.fulfillDate) || new Date(o.time).toLocaleDateString(), o.name, items, o.delivery, o.payment, o.status || 'Fulfilled', o.total.toFixed(2), o.notes].map(csvEscape).join(','));
     });
     lines.push('');
     lines.push('EXPENSES');
-    lines.push(['Date', 'Description', 'Category', 'Amount'].join(','));
+    lines.push(['Date', 'Description', 'Category', 'Amount', 'Notes'].join(','));
     filteredExpenses.forEach(function (e) {
-      lines.push([e.purchaseDate ? fmtDate(e.purchaseDate) : new Date(e.time).toLocaleDateString(), e.title, e.category, e.amount.toFixed(2)].map(csvEscape).join(','));
+      lines.push([e.purchaseDate ? fmtDate(e.purchaseDate) : new Date(e.time).toLocaleDateString(), e.title, e.category, e.amount.toFixed(2), e.notes].map(csvEscape).join(','));
+    });
+    lines.push('');
+    lines.push('CASH OUT');
+    lines.push(['Date', 'Note', 'Amount'].join(','));
+    filteredCashouts.forEach(function (c) {
+      lines.push([c.purchaseDate ? fmtDate(c.purchaseDate) : new Date(c.time).toLocaleDateString(), c.note, c.amount.toFixed(2)].map(csvEscape).join(','));
     });
 
     var blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
@@ -868,47 +982,142 @@
   }
 
   function renderExpenseView() {
+    var sub = state.expenseSubView;
     var html = '<div class="grid">';
     html += '<div>';
-    html += '<h1 class="title heading">Expense Tracker</h1>';
-    html += '<div class="field-card">';
-    html += '<label class="label" for="expTitle">Expense Description</label>';
-    html += '<input type="text" id="expTitle" placeholder="e.g., Bananas, Cups, Gas" />';
-    
-    html += '<label class="label" style="margin-top:12px;" for="expCategory">Category</label>';
-    html += '<select id="expCategory">';
-    html += '<option>Ingredients</option><option>Packaging</option><option>Utilities</option><option>Delivery/Gas</option><option>Others</option>';
-    html += '</select>';
+    html += '<h1 class="title heading">Money Tracker</h1>';
 
-    html += '<label class="label" style="margin-top:12px;" for="expAmount">Amount (\u20B1)</label>';
-    html += '<input type="number" id="expAmount" placeholder="0.00" />';
+    html += '<div class="filter-row">';
+    html += '<button class="filter-btn' + (sub === 'expenses' ? ' selected' : '') + '" data-sub-tab="expenses">Expenses</button>';
+    html += '<button class="filter-btn' + (sub === 'cashout' ? ' selected' : '') + '" data-sub-tab="cashout">Cash Out</button>';
+    html += '</div>';
 
-    html += '<label class="label" style="margin-top:12px;" for="expDate">Date Purchased</label>';
-    html += '<input type="date" id="expDate" value="' + new Date().toISOString().slice(0,10) + '" />';
+    if (sub === 'expenses') {
+      html += '<div class="field-card">';
+      html += '<label class="label" for="expTitle">Expense Description</label>';
+      html += '<input type="text" id="expTitle" placeholder="e.g., Bananas, Cups, Gas" />';
 
-    html += '<button class="charge-btn" id="saveExpenseBtn">Save Expense</button>';
-    html += '</div></div>';
+      html += '<label class="label" style="margin-top:12px;" for="expCategory">Category</label>';
+      html += '<select id="expCategory">';
+      html += '<option>Ingredients</option><option>Packaging</option><option>Utilities</option><option>Delivery/Gas</option><option>Others</option>';
+      html += '</select>';
+
+      html += '<label class="label" style="margin-top:12px;" for="expAmount">Amount (\u20B1)</label>';
+      html += '<input type="number" id="expAmount" placeholder="0.00" />';
+
+      html += '<label class="label" style="margin-top:12px;" for="expDate">Date Purchased</label>';
+      html += '<input type="date" id="expDate" value="' + new Date().toISOString().slice(0, 10) + '" />';
+
+      html += '<label class="label" style="margin-top:12px;" for="expNotes">Notes (optional)</label>';
+      html += '<textarea id="expNotes" rows="2" placeholder="Any extra details"></textarea>';
+
+      html += '<button class="charge-btn" id="saveExpenseBtn">Save Expense</button>';
+      html += '</div></div>';
+    } else {
+      html += '<div class="field-card">';
+      html += '<label class="label" for="coAmount">Amount (\u20B1)</label>';
+      html += '<input type="number" id="coAmount" placeholder="0.00" />';
+
+      html += '<label class="label" style="margin-top:12px;" for="coDate">Date</label>';
+      html += '<input type="date" id="coDate" value="' + new Date().toISOString().slice(0, 10) + '" />';
+
+      html += '<label class="label" style="margin-top:12px;" for="coNote">Note (optional)</label>';
+      html += '<textarea id="coNote" rows="2" placeholder="e.g., personal, restock funds"></textarea>';
+
+      html += '<button class="charge-btn" id="saveCashoutBtn">Save Cash Out</button>';
+      html += '</div></div>';
+    }
 
     html += '<div>';
-    html += '<h1 class="title heading">Expense History</h1>';
-    if (expenseList.length === 0) {
-      html += '<div class="empty">No expenses logged yet.</div>';
+    if (sub === 'expenses') {
+      html += '<h1 class="title heading">Expense History</h1>';
+      if (expenseList.length === 0) {
+        html += '<div class="empty">No expenses logged yet.</div>';
+      } else {
+        html += renderMoneyGroups(expenseList, 'expense', state.expenseExpanded, 'data-toggle-expense-month');
+      }
     } else {
-      expenseList.forEach(function (e) {
-        var dateLabel = e.purchaseDate ? fmtDate(e.purchaseDate) : new Date(e.time).toLocaleDateString();
-        html += '<div class="order-item">';
-        html += '<div class="top"><span class="oname">' + esc(e.title) + '</span><span class="otime">' + dateLabel + '</span></div>';
-        html += '<div class="otags"><span class="tag expense">' + esc(e.category) + '</span></div>';
-        html += '<div style="display:flex;justify-content:flex-end;margin-top:6px;"><span class="ototal" style="color:#B34545;">-' + peso(e.amount) + '</span></div>';
-        html += '<div class="row-actions"><button class="mini-btn void" data-delete-expense="' + e.id + '">Delete</button></div>';
-        html += '</div>';
-      });
+      html += '<h1 class="title heading">Cash Out History</h1>';
+      if (cashoutList.length === 0) {
+        html += '<div class="empty">No cash outs logged yet.</div>';
+      } else {
+        html += renderMoneyGroups(cashoutList, 'cashout', state.cashoutExpanded, 'data-toggle-cashout-month');
+      }
     }
     html += '</div></div>';
 
     document.getElementById('expenseView').innerHTML = html;
+    wireExpenseView();
+  }
 
-    document.getElementById('expenseView').querySelectorAll('[data-delete-expense]').forEach(function (btn) {
+  function renderMoneyGroups(list, kind, expandedMap, toggleAttr) {
+    var groups = {};
+    list.forEach(function (item) {
+      var key = monthKeyOf(item.purchaseDate || item.time);
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(item);
+    });
+    var keys = Object.keys(groups).sort().reverse();
+    var html = '';
+    keys.forEach(function (key) {
+      var items = groups[key];
+      var groupTotal = items.reduce(function (s, i) { return s + i.amount; }, 0);
+      var expanded = expandedMap.hasOwnProperty(key) ? expandedMap[key] : (key === monthKeyOf(todayStr()));
+      html += '<button class="month-toggle" ' + toggleAttr + '="' + key + '" style="width:100%;display:flex;justify-content:space-between;align-items:center;background:rgba(255,255,255,0.12);border:none;border-radius:10px;padding:10px 14px;margin-bottom:8px;">';
+      html += '<span style="font-weight:800;color:#F3F8FC;font-size:14.5px;">' + (expanded ? '\u25BC ' : '\u25B6 ') + monthLabel(key) + ' (' + items.length + ')</span>';
+      html += '<span style="font-weight:800;color:#F3F8FC;">-' + peso(groupTotal) + '</span>';
+      html += '</button>';
+      if (expanded) {
+        items.forEach(function (item) {
+          var dateLabel = item.purchaseDate ? fmtDate(item.purchaseDate) : new Date(item.time).toLocaleDateString();
+          html += '<div class="order-item">';
+          if (kind === 'expense') {
+            html += '<div class="top"><span class="oname">' + esc(item.title) + '</span><span class="otime">' + dateLabel + '</span></div>';
+            html += '<div class="otags"><span class="tag expense">' + esc(item.category) + '</span></div>';
+          } else {
+            html += '<div class="top"><span class="oname">Cash Out</span><span class="otime">' + dateLabel + '</span></div>';
+          }
+          if (item.notes || item.note) {
+            html += '<div class="odetail" style="font-style:italic;">' + esc(item.notes || item.note) + '</div>';
+          }
+          html += '<div style="display:flex;justify-content:flex-end;margin-top:6px;"><span class="ototal" style="color:#B34545;">-' + peso(item.amount) + '</span></div>';
+          html += '<div class="row-actions"><button class="mini-btn void" data-delete-' + kind + '="' + item.id + '">Delete</button></div>';
+          html += '</div>';
+        });
+      }
+    });
+    return html;
+  }
+
+  function wireExpenseView() {
+    var root = document.getElementById('expenseView');
+
+    root.querySelectorAll('[data-sub-tab]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        state.expenseSubView = btn.getAttribute('data-sub-tab');
+        renderExpenseView();
+      });
+    });
+
+    root.querySelectorAll('[data-toggle-expense-month]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var key = btn.getAttribute('data-toggle-expense-month');
+        var current = state.expenseExpanded.hasOwnProperty(key) ? state.expenseExpanded[key] : (key === monthKeyOf(todayStr()));
+        state.expenseExpanded[key] = !current;
+        renderExpenseView();
+      });
+    });
+
+    root.querySelectorAll('[data-toggle-cashout-month]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var key = btn.getAttribute('data-toggle-cashout-month');
+        var current = state.cashoutExpanded.hasOwnProperty(key) ? state.cashoutExpanded[key] : (key === monthKeyOf(todayStr()));
+        state.cashoutExpanded[key] = !current;
+        renderExpenseView();
+      });
+    });
+
+    root.querySelectorAll('[data-delete-expense]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         var id = btn.getAttribute('data-delete-expense');
         if (!confirm('Delete this expense? This cannot be undone.')) return;
@@ -919,30 +1128,72 @@
       });
     });
 
-    document.getElementById('saveExpenseBtn').addEventListener('click', function() {
-      var title = document.getElementById('expTitle').value.trim();
-      var category = document.getElementById('expCategory').value;
-      var amount = parseFloat(document.getElementById('expAmount').value) || 0;
-      var purchaseDate = document.getElementById('expDate').value;
-
-      if(!title || amount <= 0 || !purchaseDate) {
-        alert('Please fill out all fields correctly.');
-        return;
-      }
-
-      var expenseData = {
-        title: title,
-        category: category,
-        amount: amount,
-        purchaseDate: purchaseDate,
-        time: new Date().toISOString()
-      };
-
-      if (window.FirebaseDB && window.FirebaseDB.db) {
-        var fdb = window.FirebaseDB;
-        withErr(fdb.addDoc(fdb.collection(fdb.db, "expenses"), expenseData), 'save the expense');
-      }
+    root.querySelectorAll('[data-delete-cashout]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-delete-cashout');
+        if (!confirm('Delete this cash out record? This cannot be undone.')) return;
+        if (window.FirebaseDB && window.FirebaseDB.db) {
+          var fdb = window.FirebaseDB;
+          withErr(fdb.deleteDoc(fdb.doc(fdb.db, "cashouts", id)), 'delete the cash out record');
+        }
+      });
     });
+
+    var saveExpenseBtn = document.getElementById('saveExpenseBtn');
+    if (saveExpenseBtn) {
+      saveExpenseBtn.addEventListener('click', function () {
+        var title = document.getElementById('expTitle').value.trim();
+        var category = document.getElementById('expCategory').value;
+        var amount = parseFloat(document.getElementById('expAmount').value) || 0;
+        var purchaseDate = document.getElementById('expDate').value;
+        var notes = document.getElementById('expNotes').value.trim();
+
+        if (!title || amount <= 0 || !purchaseDate) {
+          alert('Please fill out all fields correctly.');
+          return;
+        }
+
+        var expenseData = {
+          title: title,
+          category: category,
+          amount: amount,
+          purchaseDate: purchaseDate,
+          notes: notes || null,
+          time: new Date().toISOString()
+        };
+
+        if (window.FirebaseDB && window.FirebaseDB.db) {
+          var fdb = window.FirebaseDB;
+          withErr(fdb.addDoc(fdb.collection(fdb.db, "expenses"), expenseData), 'save the expense');
+        }
+      });
+    }
+
+    var saveCashoutBtn = document.getElementById('saveCashoutBtn');
+    if (saveCashoutBtn) {
+      saveCashoutBtn.addEventListener('click', function () {
+        var amount = parseFloat(document.getElementById('coAmount').value) || 0;
+        var purchaseDate = document.getElementById('coDate').value;
+        var note = document.getElementById('coNote').value.trim();
+
+        if (amount <= 0 || !purchaseDate) {
+          alert('Please enter a valid amount and date.');
+          return;
+        }
+
+        var cashoutData = {
+          amount: amount,
+          purchaseDate: purchaseDate,
+          note: note || null,
+          time: new Date().toISOString()
+        };
+
+        if (window.FirebaseDB && window.FirebaseDB.db) {
+          var fdb = window.FirebaseDB;
+          withErr(fdb.addDoc(fdb.collection(fdb.db, "cashouts"), cashoutData), 'save the cash out record');
+        }
+      });
+    }
   }
 
   function showView(v) {
