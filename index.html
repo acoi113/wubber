@@ -344,9 +344,17 @@
     return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
   }
 
+  function parseLocalDate(dateInput) {
+    if (typeof dateInput === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateInput)) {
+      var parts = dateInput.split('-');
+      return new Date(parseInt(parts[0], 10), parseInt(parts[1], 10) - 1, parseInt(parts[2], 10));
+    }
+    return new Date(dateInput);
+  }
+
   function isInRange(dateInput, range) {
     if (range === 'all') return true;
-    var d = new Date(dateInput);
+    var d = parseLocalDate(dateInput);
     if (isNaN(d.getTime())) return true;
     var now = new Date();
     if (range === 'today') {
@@ -355,6 +363,7 @@
     if (range === 'week') {
       var weekAgo = new Date(now);
       weekAgo.setDate(now.getDate() - 7);
+      weekAgo.setHours(0, 0, 0, 0);
       return d >= weekAgo && d <= now;
     }
     if (range === 'month') {
@@ -697,6 +706,14 @@
     var totalExpenses = filteredExpenses.reduce(function (s, e) { return s + e.amount; }, 0);
     var netProfit = totalRevenue - totalExpenses;
 
+    var paymentTotals = {};
+    PAYMENTS.forEach(function (p) { paymentTotals[p] = 0; });
+    filteredSales.forEach(function (o) {
+      if (isFulfilled(o) && o.payment && paymentTotals.hasOwnProperty(o.payment)) {
+        paymentTotals[o.payment] += o.total;
+      }
+    });
+
     var html = '<h1 class="title heading">Sales & Budget Dashboard</h1>';
 
     html += '<div class="filter-row">';
@@ -712,6 +729,16 @@
     html += '<div class="sum-card"><div class="k">Total Expenses</div><div class="v" style="color:#B34545;">' + peso(totalExpenses) + '</div></div>';
     html += '<div class="sum-card"><div class="k">Net Profit</div><div class="v" style="color:' + (netProfit < 0 ? '#B34545' : '#3A8F5C') + ';">' + peso(netProfit) + '</div></div>';
     html += '<div class="sum-card"><div class="k">Orders</div><div class="v">' + filteredSales.length + '</div></div>';
+    html += '</div>';
+
+    html += '<div class="field-card">';
+    html += '<h2 class="heading" style="font-size:17px;color:#3D6690;margin:0 0 10px;">Sales by Payment Method</h2>';
+    PAYMENTS.forEach(function (p) {
+      html += '<div class="stock-row">';
+      html += '<span class="fn">' + esc(p) + '</span>';
+      html += '<span style="font-weight:800;color:#3D6690;">' + peso(paymentTotals[p]) + '</span>';
+      html += '</div>';
+    });
     html += '</div>';
 
     html += '<div class="field-card">';
