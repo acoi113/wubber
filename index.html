@@ -373,7 +373,8 @@
   }
 
   function isPreOrderDate(dateStr) {
-    return !!dateStr && dateStr !== todayStr();
+    if (!dateStr) return false;
+    return dateStr > todayStr();
   }
 
   function isFulfilled(o) {
