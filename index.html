@@ -73,7 +73,9 @@
   .filter-btn.selected { background: #FDFBF3; border-color: #FDFBF3; color: #3D6690; }
 
   .tag.status-pending { background: #FBE8B8; color: #6B4A20; }
+  .tag.status-pre-order { background: #FBE8B8; color: #6B4A20; }
   .tag.status-fulfilled { background: #C9EAD2; color: #245A34; }
+  .fulfill-form { background: #fff; border-radius: 10px; padding: 10px; margin-top: 10px; }
 
   .row-actions { display: flex; gap: 8px; margin-top: 8px; justify-content: flex-end; }
   .mini-btn { border: none; border-radius: 8px; padding: 6px 12px; font-weight: 800; font-size: 11.5px; }
@@ -255,6 +257,7 @@
     if (pill) pill.textContent = 'Order #' + String(nextOrderNum).padStart(3, '0');
 
     var totalTubs = salesList.reduce(function(sum, order) {
+      if (!isFulfilled(order)) return sum;
       return sum + (order.lines ? order.lines.reduce(function(lSum, line) { return lSum + line.qty; }, 0) : 0);
     }, 0);
     var tubEl = document.getElementById('tubCounter');
@@ -325,7 +328,9 @@
     cash: '',
     orderNum: 1,
     view: 'order',
-    salesFilter: 'all'
+    salesFilter: 'all',
+    fulfillingId: null,
+    fulfillDraft: { payment: 'Cash', cash: '' }
   };
 
   function peso(n) { return '\u20B1' + (n || 0).toFixed(2); }
@@ -359,6 +364,19 @@
 
   function getStock(flavorId) {
     return (inventory && typeof inventory[flavorId] === 'number') ? inventory[flavorId] : null;
+  }
+
+  function todayStr() {
+    var d = new Date();
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  function isPreOrderDate(dateStr) {
+    return !!dateStr && dateStr !== todayStr();
+  }
+
+  function isFulfilled(o) {
+    return (o.status || 'Fulfilled') === 'Fulfilled';
   }
 
   function cartLines() {
@@ -400,10 +418,11 @@
     var total = cartTotal();
     var cashNum = parseFloat(state.cash) || 0;
     var change = cashNum - total;
+    var isPreOrder = isPreOrderDate(state.fulfillDate);
     var canCharge = lines.length > 0 && state.customerName.trim().length > 0 &&
       (state.delivery === 'Pickup' || state.address.trim().length > 0) &&
       state.fulfillDate.trim().length > 0 &&
-      cashNum >= total;
+      (isPreOrder || cashNum >= total);
 
     var html = '';
     html += '<div class="grid">';
@@ -428,6 +447,9 @@
 
     html += '<label class="label" style="margin-top:12px;" for="fulfillDate">' + (state.delivery === 'Delivery' ? 'Delivery date' : 'Pickup date') + '</label>';
     html += '<input type="date" id="fulfillDate" value="' + esc(state.fulfillDate) + '" />';
+    if (isPreOrderDate(state.fulfillDate)) {
+      html += '<div class="hint" style="margin:8px 0 0;color:#8A5A3A;">\uD83D\uDCC5 This is a future date, so it will be saved as a <strong>Pre-order</strong>. Payment will be collected once you mark it Fulfilled.</div>';
+    }
     html += '</div>';
 
     html += '<div class="flavors">';
@@ -469,19 +491,23 @@
     }
     html += '<div class="total-row"><span class="lbl">Total</span><span class="val">' + peso(total) + '</span></div>';
 
-    html += '<label class="label" style="margin-top:12px;">Payment method</label>';
-    html += '<div class="pay-grid">';
-    PAYMENTS.forEach(function (p) {
-      html += '<button class="pay-btn' + (state.payment === p ? ' selected' : '') + '" data-payment="' + p + '">' + p + '</button>';
-    });
-    html += '</div>';
+    if (isPreOrder) {
+      html += '<div class="hint" style="margin-top:6px;">This is a pre-order. Payment method and cash will be collected when you mark it Fulfilled on pickup/delivery date.</div>';
+    } else {
+      html += '<label class="label" style="margin-top:12px;">Payment method</label>';
+      html += '<div class="pay-grid">';
+      PAYMENTS.forEach(function (p) {
+        html += '<button class="pay-btn' + (state.payment === p ? ' selected' : '') + '" data-payment="' + p + '">' + p + '</button>';
+      });
+      html += '</div>';
 
-    html += '<label class="label" style="margin-top:12px;" for="cashInput">Cash / amount received</label>';
-    html += '<input type="text" inputmode="decimal" id="cashInput" placeholder="0.00" value="' + esc(state.cash) + '" />';
+      html += '<label class="label" style="margin-top:12px;" for="cashInput">Cash / amount received</label>';
+      html += '<input type="text" inputmode="decimal" id="cashInput" placeholder="0.00" value="' + esc(state.cash) + '" />';
 
-    html += '<div class="total-row" style="border-top:none;padding-top:8px;"><span class="lbl" style="font-size:13.5px;">Change</span><span style="font-weight:800;color:' + (change < 0 ? '#B34545' : '#3A8F5C') + ';font-size:15px;">' + peso(Math.max(change, 0) || 0) + '</span></div>';
+      html += '<div class="total-row" style="border-top:none;padding-top:8px;"><span class="lbl" style="font-size:13.5px;">Change</span><span style="font-weight:800;color:' + (change < 0 ? '#B34545' : '#3A8F5C') + ';font-size:15px;">' + peso(Math.max(change, 0) || 0) + '</span></div>';
+    }
 
-    html += '<button class="charge-btn" id="chargeBtn"' + (canCharge ? '' : ' disabled') + '>Charge ' + (lines.length ? peso(total) : '') + '</button>';
+    html += '<button class="charge-btn" id="chargeBtn"' + (canCharge ? '' : ' disabled') + '>' + (isPreOrder ? 'Save Pre-order' : 'Charge') + ' ' + (lines.length ? peso(total) : '') + '</button>';
     if (lines.length > 0) {
       html += '<button class="clear-btn" id="clearBtn">Clear order</button>';
     }
@@ -545,7 +571,7 @@
     if (fulfillDateInput) {
       fulfillDateInput.addEventListener('input', function () {
         state.fulfillDate = fulfillDateInput.value;
-        checkCanCharge();
+        renderOrderView();
       });
     }
     var cashInput = document.getElementById('cashInput');
@@ -571,9 +597,10 @@
     var lines = cartLines();
     var total = cartTotal();
     var cashNum = parseFloat(state.cash) || 0;
+    var isPreOrder = isPreOrderDate(state.fulfillDate);
     var canCharge = lines.length > 0 && state.customerName.trim().length > 0 &&
       (state.delivery === 'Pickup' || state.address.trim().length > 0) &&
-      state.fulfillDate.trim().length > 0 && cashNum >= total;
+      state.fulfillDate.trim().length > 0 && (isPreOrder || cashNum >= total);
     if (chargeBtn) chargeBtn.disabled = !canCharge;
   }
 
@@ -581,6 +608,7 @@
     var lines = cartLines();
     var total = cartTotal();
     var cashNum = parseFloat(state.cash) || 0;
+    var isPreOrder = isPreOrderDate(state.fulfillDate);
     if (lines.length === 0 || !state.customerName.trim()) return;
 
     var order = {
@@ -589,12 +617,12 @@
       delivery: state.delivery,
       address: state.delivery === 'Delivery' ? state.address.trim() : '',
       fulfillDate: state.fulfillDate,
-      payment: state.payment,
+      payment: isPreOrder ? null : state.payment,
       lines: lines,
       total: total,
-      cash: cashNum,
-      change: cashNum - total,
-      status: 'Pending',
+      cash: isPreOrder ? null : cashNum,
+      change: isPreOrder ? null : (cashNum - total),
+      status: isPreOrder ? 'Pre-order' : 'Fulfilled',
       time: new Date().toISOString()
     };
 
@@ -640,9 +668,13 @@
     });
     html += '<hr/>';
     html += '<div class="rrow bold"><span>Total</span><span>' + peso(order.total) + '</span></div>';
-    html += '<div class="rrow"><span>Payment</span><span>' + order.payment + '</span></div>';
-    html += '<div class="rrow"><span>Cash</span><span>' + peso(order.cash) + '</span></div>';
-    html += '<div class="rrow"><span>Change</span><span>' + peso(order.change) + '</span></div>';
+    if (order.status === 'Pre-order') {
+      html += '<div class="rline" style="color:#8A5A3A;font-weight:700;margin-top:6px;">\uD83D\uDCC5 Pre-order &mdash; payment due on ' + (order.delivery === 'Delivery' ? 'delivery' : 'pickup') + '.</div>';
+    } else {
+      html += '<div class="rrow"><span>Payment</span><span>' + order.payment + '</span></div>';
+      html += '<div class="rrow"><span>Cash</span><span>' + peso(order.cash) + '</span></div>';
+      html += '<div class="rrow"><span>Change</span><span>' + peso(order.change) + '</span></div>';
+    }
     html += '<div class="thanks">Thanks for picking Wubber! 🍮</div>';
     html += '<button class="charge-btn" id="newSaleBtn">Start new order</button>';
     html += '</div>';
@@ -658,7 +690,7 @@
     var filteredSales = salesList.filter(function (o) { return isInRange(o.time, filter); });
     var filteredExpenses = expenseList.filter(function (e) { return isInRange(e.purchaseDate || e.time, filter); });
 
-    var totalRevenue = filteredSales.reduce(function (s, o) { return s + o.total; }, 0);
+    var totalRevenue = filteredSales.reduce(function (s, o) { return isFulfilled(o) ? s + o.total : s; }, 0);
     var totalExpenses = filteredExpenses.reduce(function (s, e) { return s + e.amount; }, 0);
     var netProfit = totalRevenue - totalExpenses;
 
@@ -699,20 +731,41 @@
         var t = new Date(o.time);
         var itemsSummary = o.lines ? o.lines.map(function (l) { return l.qty + '\u00d7 ' + l.name; }).join(', ') : '';
         var status = o.status || 'Fulfilled';
+        var fulfilled = status === 'Fulfilled';
         html += '<div class="order-item">';
         html += '<div class="top"><span class="oname">' + esc(o.name) + ' &middot; #' + String(o.num).padStart(3, '0') + '</span><span class="otime">' + t.toLocaleDateString() + ' ' + t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + '</span></div>';
         html += '<div class="odetail">' + esc(itemsSummary) + '</div>';
         if (o.delivery === 'Delivery' && o.address) {
           html += '<div class="odetail">Deliver to: ' + esc(o.address) + '</div>';
         }
-        html += '<div class="otags"><span class="tag">' + o.delivery + '</span><span class="tag pay">' + o.payment + '</span><span class="tag">' + fmtDate(o.fulfillDate) + '</span><span class="tag status-' + status.toLowerCase() + '">' + status + '</span></div>';
+        html += '<div class="otags"><span class="tag">' + o.delivery + '</span>' + (o.payment ? '<span class="tag pay">' + o.payment + '</span>' : '') + '<span class="tag">' + fmtDate(o.fulfillDate) + '</span><span class="tag status-' + status.toLowerCase().replace(/\s+/g, '-') + '">' + status + '</span></div>';
         html += '<div style="display:flex;justify-content:flex-end;margin-top:6px;"><span class="ototal">' + peso(o.total) + '</span></div>';
-        html += '<div class="row-actions">';
-        if (status === 'Pending') {
-          html += '<button class="mini-btn fulfill" data-fulfill="' + o.id + '">Mark Fulfilled</button>';
+
+        if (state.fulfillingId === o.id) {
+          var cashNum = parseFloat(state.fulfillDraft.cash) || 0;
+          html += '<div class="fulfill-form">';
+          html += '<label class="label">Payment method received</label>';
+          html += '<div class="pay-grid">';
+          PAYMENTS.forEach(function (p) {
+            html += '<button class="pay-btn' + (state.fulfillDraft.payment === p ? ' selected' : '') + '" data-fulfill-payment="' + p + '">' + p + '</button>';
+          });
+          html += '</div>';
+          html += '<label class="label" style="margin-top:10px;">Cash received</label>';
+          html += '<input type="text" inputmode="decimal" id="fulfillCashInput" placeholder="0.00" value="' + esc(state.fulfillDraft.cash) + '" />';
+          html += '<div class="hint" style="margin:6px 0;">Change: ' + peso(Math.max(cashNum - o.total, 0)) + '</div>';
+          html += '<div class="row-actions">';
+          html += '<button class="mini-btn void" data-cancel-fulfill="1">Cancel</button>';
+          html += '<button class="mini-btn fulfill" data-confirm-fulfill="' + o.id + '"' + (cashNum >= o.total ? '' : ' disabled style="opacity:.5;"') + '>Confirm Fulfilled</button>';
+          html += '</div>';
+          html += '</div>';
+        } else {
+          html += '<div class="row-actions">';
+          if (!fulfilled) {
+            html += '<button class="mini-btn fulfill" data-start-fulfill="' + o.id + '">Mark Fulfilled</button>';
+          }
+          html += '<button class="mini-btn void" data-void-order="' + o.id + '">Void</button>';
+          html += '</div>';
         }
-        html += '<button class="mini-btn void" data-void-order="' + o.id + '">Void</button>';
-        html += '</div>';
         html += '</div>';
       });
     }
@@ -746,12 +799,54 @@
       });
     });
 
-    root.querySelectorAll('[data-fulfill]').forEach(function (btn) {
+    root.querySelectorAll('[data-start-fulfill]').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        var id = btn.getAttribute('data-fulfill');
+        state.fulfillingId = btn.getAttribute('data-start-fulfill');
+        state.fulfillDraft = { payment: 'Cash', cash: '' };
+        renderSalesView();
+      });
+    });
+
+    root.querySelectorAll('[data-cancel-fulfill]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        state.fulfillingId = null;
+        renderSalesView();
+      });
+    });
+
+    root.querySelectorAll('[data-fulfill-payment]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        state.fulfillDraft.payment = btn.getAttribute('data-fulfill-payment');
+        renderSalesView();
+      });
+    });
+
+    var fulfillCashInput = document.getElementById('fulfillCashInput');
+    if (fulfillCashInput) {
+      fulfillCashInput.addEventListener('input', function () {
+        state.fulfillDraft.cash = fulfillCashInput.value;
+        renderSalesView();
+        var el = document.getElementById('fulfillCashInput');
+        if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+      });
+    }
+
+    root.querySelectorAll('[data-confirm-fulfill]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (btn.disabled) return;
+        var id = btn.getAttribute('data-confirm-fulfill');
+        var order = salesList.find(function (o) { return o.id === id; });
+        var cashNum = parseFloat(state.fulfillDraft.cash) || 0;
+        if (!order || cashNum < order.total) return;
         if (fdb && fdb.db) {
-          withErr(fdb.updateDoc(fdb.doc(fdb.db, "sales", id), { status: 'Fulfilled' }), 'mark the order fulfilled');
+          withErr(fdb.updateDoc(fdb.doc(fdb.db, "sales", id), {
+            status: 'Fulfilled',
+            payment: state.fulfillDraft.payment,
+            cash: cashNum,
+            change: cashNum - order.total
+          }), 'mark the order fulfilled');
         }
+        state.fulfillingId = null;
       });
     });
 
