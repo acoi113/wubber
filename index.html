@@ -65,10 +65,6 @@
   .pill.offline { background: #B34545; color: #fff; }
   .pill.online { background: #3A8F5C; color: #fff; }
 
-  .stock-badge { font-size: 11px; font-weight: 800; padding: 3px 9px; border-radius: 999px; background: #EADFAF; color: #6B4A20; }
-  .stock-badge.low { background: #F8D7DA; color: #721C24; }
-  .stock-badge.out { background: #B34545; color: #fff; }
-
   .filter-row { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
   .filter-btn { padding: 8px 14px; border-radius: 999px; border: 2px solid rgba(255,255,255,0.4); background: rgba(255,255,255,0.08); font-weight: 700; font-size: 12.5px; color: #F3F8FC; }
   .filter-btn.selected { background: #FDFBF3; border-color: #FDFBF3; color: #3D6690; }
@@ -248,7 +244,6 @@
 
   var salesList = [];
   var expenseList = [];
-  var inventory = {};
   var state; // declared below, referenced by listeners
 
   function syncOrderCount() {
@@ -307,14 +302,6 @@
           console.error('Expense sync error:', err);
           alert('Could not load expense data: ' + err.message);
         });
-
-        fdb.onSnapshot(fdb.doc(fdb.db, "meta", "inventory"), function(docSnap) {
-          inventory = docSnap.exists() ? docSnap.data() : {};
-          if (state.view === 'order') renderOrderView();
-          if (state.view === 'sales') renderSalesView();
-        }, function(err) {
-          console.error('Inventory sync error:', err);
-        });
       }
     }, 300);
   });
@@ -370,10 +357,6 @@
       return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
     }
     return true;
-  }
-
-  function getStock(flavorId) {
-    return (inventory && typeof inventory[flavorId] === 'number') ? inventory[flavorId] : null;
   }
 
   function todayStr() {
@@ -466,24 +449,17 @@
     html += '<div class="flavors">';
     FLAVORS.forEach(function (f) {
       var qty = state.cart[f.id] || 0;
-      var stock = getStock(f.id);
-      var outOfStock = stock !== null && stock <= 0;
-      var atStockLimit = stock !== null && qty >= stock;
       html += '<div class="flavor-card' + (qty ? ' has-qty' : '') + '">';
       html += '<div class="flavor-top">' + cupSVG(f.tone, f.swirl) + '<div class="price-pill">' + peso(f.price) + '</div></div>';
       html += '<h3>' + esc(f.name) + '</h3>';
       html += '<p>' + esc(f.blurb) + '</p>';
-      if (stock !== null) {
-        var badgeClass = outOfStock ? 'out' : (stock <= 5 ? 'low' : '');
-        html += '<div style="margin-bottom:10px;"><span class="stock-badge' + (badgeClass ? ' ' + badgeClass : '') + '">' + (outOfStock ? 'Out of stock' : stock + ' left') + '</span></div>';
-      }
       if (qty === 0) {
-        html += '<button class="add-btn" data-add="' + f.id + '"' + (outOfStock ? ' disabled style="opacity:.5;"' : '') + '>' + (outOfStock ? 'Out of stock' : 'Add to order') + '</button>';
+        html += '<button class="add-btn" data-add="' + f.id + '">Add to order</button>';
       } else {
         html += '<div class="qty-row">';
         html += '<button class="qty-btn qty-minus" data-remove="' + f.id + '">\u2212</button>';
         html += '<span style="font-weight:800;font-size:15px;">' + qty + '</span>';
-        html += '<button class="qty-btn qty-plus" data-add="' + f.id + '"' + (atStockLimit ? ' disabled style="opacity:.5;"' : '') + '>+</button>';
+        html += '<button class="qty-btn qty-plus" data-add="' + f.id + '">+</button>';
         html += '</div>';
       }
       html += '</div>';
@@ -533,12 +509,8 @@
     var root = document.getElementById('orderView');
     root.querySelectorAll('[data-add]').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        if (btn.disabled) return;
         var id = btn.getAttribute('data-add');
-        var stock = getStock(id);
-        var currentQty = state.cart[id] || 0;
-        if (stock !== null && currentQty >= stock) return;
-        state.cart[id] = currentQty + 1;
+        state.cart[id] = (state.cart[id] || 0) + 1;
         renderOrderView();
       });
     });
@@ -640,14 +612,6 @@
     if (window.FirebaseDB && window.FirebaseDB.db) {
       var fdb = window.FirebaseDB;
       withErr(fdb.addDoc(fdb.collection(fdb.db, "sales"), order), 'save the order');
-
-      var stockUpdates = {};
-      lines.forEach(function (l) {
-        if (getStock(l.id) !== null) stockUpdates[l.id] = fdb.increment(-l.qty);
-      });
-      if (Object.keys(stockUpdates).length > 0) {
-        withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "inventory"), stockUpdates, { merge: true }), 'update stock');
-      }
     }
 
     renderReceipt(order);
@@ -698,7 +662,7 @@
 
   function renderSalesView() {
     var filter = state.salesFilter;
-    var filteredSales = salesList.filter(function (o) { return isInRange(o.fulfillDate || o.time, filter); });
+    var filteredSales = salesList.filter(function (o) { return !isFulfilled(o) || isInRange(o.fulfillDate || o.time, filter); });
     var filteredExpenses = expenseList.filter(function (e) { return isInRange(e.purchaseDate || e.time, filter); });
 
     var totalRevenue = filteredSales.reduce(function (s, o) { return isFulfilled(o) ? s + o.total : s; }, 0);
@@ -739,20 +703,6 @@
       html += '<span style="font-weight:800;color:#3D6690;">' + peso(paymentTotals[p]) + '</span>';
       html += '</div>';
     });
-    html += '</div>';
-
-    html += '<div class="field-card">';
-    html += '<h2 class="heading" style="font-size:17px;color:#3D6690;margin:0 0 10px;">Flavor Stock</h2>';
-    FLAVORS.forEach(function (f) {
-      var stock = getStock(f.id);
-      html += '<div class="stock-row">';
-      html += '<span class="fn">' + esc(f.name) + '</span>';
-      html += '<div style="display:flex;align-items:center;gap:8px;">';
-      html += '<input type="number" min="0" data-stock-input="' + f.id + '" placeholder="' + (stock === null ? 'not tracked' : stock) + '" />';
-      html += '<button class="mini-btn fulfill" data-set-stock="' + f.id + '">Set</button>';
-      html += '</div></div>';
-    });
-    html += '<div class="hint" style="margin:6px 0 0;">Set a stock number to start tracking a flavor. Leave blank / untracked flavors have unlimited stock.</div>';
     html += '</div>';
 
     if (filteredSales.length === 0) {
@@ -815,20 +765,6 @@
       });
     });
 
-    root.querySelectorAll('[data-set-stock]').forEach(function (btn) {
-      btn.addEventListener('click', function () {
-        var id = btn.getAttribute('data-set-stock');
-        var input = root.querySelector('[data-stock-input="' + id + '"]');
-        var val = parseInt(input.value, 10);
-        if (isNaN(val) || val < 0) { alert('Enter a valid stock number (0 or more).'); return; }
-        if (fdb && fdb.db) {
-          var update = {};
-          update[id] = val;
-          withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "inventory"), update, { merge: true }), 'update stock');
-        }
-      });
-    });
-
     root.querySelectorAll('[data-start-fulfill]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         state.fulfillingId = btn.getAttribute('data-start-fulfill');
@@ -887,15 +823,6 @@
         if (!confirm('Void order #' + (order ? String(order.num).padStart(3, '0') : '') + '? This cannot be undone.')) return;
         if (fdb && fdb.db) {
           withErr(fdb.deleteDoc(fdb.doc(fdb.db, "sales", id)), 'void the order');
-          if (order && order.lines) {
-            var restock = {};
-            order.lines.forEach(function (l) {
-              if (getStock(l.id) !== null) restock[l.id] = fdb.increment(l.qty);
-            });
-            if (Object.keys(restock).length > 0) {
-              withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "inventory"), restock, { merge: true }), 'restock inventory');
-            }
-          }
         }
       });
     });
@@ -912,7 +839,7 @@
 
   function exportCsv() {
     var filter = state.salesFilter;
-    var filteredSales = salesList.filter(function (o) { return isInRange(o.fulfillDate || o.time, filter); });
+    var filteredSales = salesList.filter(function (o) { return !isFulfilled(o) || isInRange(o.fulfillDate || o.time, filter); });
     var filteredExpenses = expenseList.filter(function (e) { return isInRange(e.purchaseDate || e.time, filter); });
 
     var lines = [];
