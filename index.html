@@ -168,6 +168,9 @@
   .order-item .oname { font-weight: 800; color: #26374A; font-size: 15px; }
   .order-item .otime { font-size: 11px; color: #8A8A78; }
   .order-item .odetail { font-size: 12.5px; color: #4A4230; margin-top: 4px; }
+  .oline { display: flex; justify-content: space-between; font-size: 13px; padding: 3px 0; color: #26374A; }
+  .oline .oq { font-weight: 800; color: #3D6690; margin-right: 6px; }
+  .otubs { font-weight: 800; color: #8A5A3A; font-size: 12.5px; margin-top: 6px; }
   .order-item .otags { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
   .tag { font-size: 10.5px; font-weight: 800; padding: 3px 9px; border-radius: 999px; background: #A9D3EA; color: #20425F; }
   .tag.pay { background: #EADFAF; color: #6B4A20; }
@@ -706,12 +709,17 @@
   }
 
   function renderOrderCard(o) {
-    var itemsSummary = o.lines ? o.lines.map(function (l) { return l.qty + '\u00d7 ' + l.name; }).join(', ') : '';
     var status = o.status || 'Fulfilled';
     var fulfilled = status === 'Fulfilled';
+    var totalTubs = o.lines ? o.lines.reduce(function (s, l) { return s + l.qty; }, 0) : 0;
     var html = '<div class="order-item">';
     html += '<div class="top"><span class="oname">' + esc(o.name) + ' &middot; #' + String(o.num).padStart(3, '0') + '</span><span class="otime">' + fmtDate(o.fulfillDate) + '</span></div>';
-    html += '<div class="odetail">' + esc(itemsSummary) + '</div>';
+    if (o.lines) {
+      o.lines.forEach(function (l) {
+        html += '<div class="oline"><span><span class="oq">' + l.qty + '\u00d7</span>' + esc(l.name) + '</span></div>';
+      });
+    }
+    html += '<div class="otubs">\uD83E\uDDCA Total: ' + totalTubs + ' tub' + (totalTubs === 1 ? '' : 's') + '</div>';
     if (o.delivery === 'Delivery' && o.address) {
       html += '<div class="odetail">Deliver to: ' + esc(o.address) + '</div>';
     }
