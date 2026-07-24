@@ -333,6 +333,7 @@
     orderNum: 1,
     view: 'order',
     salesFilter: 'all',
+    salesDate: '',
     salesSearch: '',
     fulfillingId: null,
     fulfillDraft: { payment: 'Cash', cash: '' },
@@ -360,7 +361,7 @@
     return new Date(dateInput);
   }
 
-  function isInRange(dateInput, range) {
+  function isInRange(dateInput, range, customDate) {
     if (range === 'all') return true;
     var d = parseLocalDate(dateInput);
     if (isNaN(d.getTime())) return true;
@@ -376,6 +377,11 @@
     }
     if (range === 'month') {
       return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth();
+    }
+    if (range === 'date') {
+      if (!customDate) return true;
+      var target = parseLocalDate(customDate);
+      return d.toDateString() === target.toDateString();
     }
     return true;
   }
@@ -759,11 +765,11 @@
   }
 
   function renderSalesView() {
-    var filter = state.salesFilter;
+    var filter = state.salesDate ? 'date' : state.salesFilter;
     var searchTerm = state.salesSearch.trim().toLowerCase();
-    var filteredSales = salesList.filter(function (o) { return !isFulfilled(o) || isInRange(o.fulfillDate || o.time, filter); });
-    var filteredExpenses = expenseList.filter(function (e) { return isInRange(e.purchaseDate || e.time, filter); });
-    var filteredCashouts = cashoutList.filter(function (c) { return isInRange(c.purchaseDate || c.time, filter); });
+    var filteredSales = salesList.filter(function (o) { return !isFulfilled(o) || isInRange(o.fulfillDate || o.time, filter, state.salesDate); });
+    var filteredExpenses = expenseList.filter(function (e) { return isInRange(e.purchaseDate || e.time, filter, state.salesDate); });
+    var filteredCashouts = cashoutList.filter(function (c) { return isInRange(c.purchaseDate || c.time, filter, state.salesDate); });
 
     var totalRevenue = filteredSales.reduce(function (s, o) { return isFulfilled(o) ? s + o.total : s; }, 0);
     var totalPending = filteredSales.reduce(function (s, o) { return isFulfilled(o) ? s : s + o.total; }, 0);
@@ -773,19 +779,31 @@
     var availableBalance = netProfit - totalCashOut;
 
     var paymentTotals = {};
-    PAYMENTS.forEach(function (p) { paymentTotals[p] = 0; });
+    PAYMENTS.forEach(function (p) { paymentTotals[p] = { received: 0, spent: 0 }; });
     filteredSales.forEach(function (o) {
       if (isFulfilled(o) && o.payment && paymentTotals.hasOwnProperty(o.payment)) {
-        paymentTotals[o.payment] += o.total;
+        paymentTotals[o.payment].received += o.total;
       }
+    });
+    filteredExpenses.forEach(function (e) {
+      var pv = e.paidVia || 'Cash';
+      if (paymentTotals.hasOwnProperty(pv)) paymentTotals[pv].spent += e.amount;
+    });
+    filteredCashouts.forEach(function (c) {
+      var pv = c.paidVia || 'Cash';
+      if (paymentTotals.hasOwnProperty(pv)) paymentTotals[pv].spent += c.amount;
     });
 
     var html = '<h1 class="title heading">Sales & Budget Dashboard</h1>';
 
     html += '<div class="filter-row">';
     [['all', 'All Time'], ['today', 'Today'], ['week', 'This Week'], ['month', 'This Month']].forEach(function (f) {
-      html += '<button class="filter-btn' + (filter === f[0] ? ' selected' : '') + '" data-filter="' + f[0] + '">' + f[1] + '</button>';
+      html += '<button class="filter-btn' + (filter === f[0] && !state.salesDate ? ' selected' : '') + '" data-filter="' + f[0] + '">' + f[1] + '</button>';
     });
+    html += '<input type="date" id="salesDateInput" value="' + esc(state.salesDate) + '" style="padding:8px 12px;border-radius:999px;font-size:12.5px;font-weight:700;" />';
+    if (state.salesDate) {
+      html += '<button class="filter-btn" id="clearSalesDateBtn">\u2715 Clear date</button>';
+    }
     html += '<button class="filter-btn mini-btn export" id="exportCsvBtn" style="margin-left:auto;">\u2B07 Export CSV</button>';
     html += '</div>';
 
@@ -800,11 +818,12 @@
     html += '</div>';
 
     html += '<div class="field-card">';
-    html += '<h2 class="heading" style="font-size:17px;color:#3D6690;margin:0 0 10px;">Sales by Payment Method</h2>';
+    html += '<h2 class="heading" style="font-size:17px;color:#3D6690;margin:0 0 10px;">Money by Payment Method</h2>';
     PAYMENTS.forEach(function (p) {
-      html += '<div class="stock-row">';
-      html += '<span class="fn">' + esc(p) + '</span>';
-      html += '<span style="font-weight:800;color:#3D6690;">' + peso(paymentTotals[p]) + '</span>';
+      var net = paymentTotals[p].received - paymentTotals[p].spent;
+      html += '<div class="stock-row" style="flex-direction:column;align-items:stretch;gap:4px;">';
+      html += '<div style="display:flex;justify-content:space-between;"><span class="fn">' + esc(p) + '</span><span style="font-weight:800;color:' + (net < 0 ? '#B34545' : '#3A8F5C') + ';">' + peso(net) + '</span></div>';
+      html += '<div style="display:flex;justify-content:space-between;font-size:11.5px;color:#8A8A78;"><span>Received: ' + peso(paymentTotals[p].received) + '</span><span>Spent: ' + peso(paymentTotals[p].spent) + '</span></div>';
       html += '</div>';
     });
     html += '</div>';
@@ -857,9 +876,26 @@
     root.querySelectorAll('[data-filter]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         state.salesFilter = btn.getAttribute('data-filter');
+        state.salesDate = '';
         renderSalesView();
       });
     });
+
+    var salesDateInput = document.getElementById('salesDateInput');
+    if (salesDateInput) {
+      salesDateInput.addEventListener('input', function () {
+        state.salesDate = salesDateInput.value;
+        renderSalesView();
+      });
+    }
+
+    var clearSalesDateBtn = document.getElementById('clearSalesDateBtn');
+    if (clearSalesDateBtn) {
+      clearSalesDateBtn.addEventListener('click', function () {
+        state.salesDate = '';
+        renderSalesView();
+      });
+    }
 
     var salesSearchInput = document.getElementById('salesSearchInput');
     if (salesSearchInput) {
@@ -953,10 +989,10 @@
   }
 
   function exportCsv() {
-    var filter = state.salesFilter;
-    var filteredSales = salesList.filter(function (o) { return !isFulfilled(o) || isInRange(o.fulfillDate || o.time, filter); });
-    var filteredExpenses = expenseList.filter(function (e) { return isInRange(e.purchaseDate || e.time, filter); });
-    var filteredCashouts = cashoutList.filter(function (c) { return isInRange(c.purchaseDate || c.time, filter); });
+    var filter = state.salesDate ? 'date' : state.salesFilter;
+    var filteredSales = salesList.filter(function (o) { return !isFulfilled(o) || isInRange(o.fulfillDate || o.time, filter, state.salesDate); });
+    var filteredExpenses = expenseList.filter(function (e) { return isInRange(e.purchaseDate || e.time, filter, state.salesDate); });
+    var filteredCashouts = cashoutList.filter(function (c) { return isInRange(c.purchaseDate || c.time, filter, state.salesDate); });
 
     var lines = [];
     lines.push('SALES');
@@ -1016,6 +1052,11 @@
       html += '<label class="label" style="margin-top:12px;" for="expDate">Date Purchased</label>';
       html += '<input type="date" id="expDate" value="' + new Date().toISOString().slice(0, 10) + '" />';
 
+      html += '<label class="label" style="margin-top:12px;" for="expPaidVia">Paid via</label>';
+      html += '<select id="expPaidVia">';
+      PAYMENTS.forEach(function (p) { html += '<option>' + p + '</option>'; });
+      html += '</select>';
+
       html += '<label class="label" style="margin-top:12px;" for="expNotes">Notes (optional)</label>';
       html += '<textarea id="expNotes" rows="2" placeholder="Any extra details"></textarea>';
 
@@ -1028,6 +1069,11 @@
 
       html += '<label class="label" style="margin-top:12px;" for="coDate">Date</label>';
       html += '<input type="date" id="coDate" value="' + new Date().toISOString().slice(0, 10) + '" />';
+
+      html += '<label class="label" style="margin-top:12px;" for="coPaidVia">Taken from</label>';
+      html += '<select id="coPaidVia">';
+      PAYMENTS.forEach(function (p) { html += '<option>' + p + '</option>'; });
+      html += '</select>';
 
       html += '<label class="label" style="margin-top:12px;" for="coNote">Note (optional)</label>';
       html += '<textarea id="coNote" rows="2" placeholder="e.g., personal, restock funds"></textarea>';
@@ -1081,9 +1127,10 @@
           html += '<div class="order-item">';
           if (kind === 'expense') {
             html += '<div class="top"><span class="oname">' + esc(item.title) + '</span><span class="otime">' + dateLabel + '</span></div>';
-            html += '<div class="otags"><span class="tag expense">' + esc(item.category) + '</span></div>';
+            html += '<div class="otags"><span class="tag expense">' + esc(item.category) + '</span><span class="tag pay">' + esc(item.paidVia || 'Cash') + '</span></div>';
           } else {
             html += '<div class="top"><span class="oname">Cash Out</span><span class="otime">' + dateLabel + '</span></div>';
+            html += '<div class="otags"><span class="tag pay">' + esc(item.paidVia || 'Cash') + '</span></div>';
           }
           if (item.notes || item.note) {
             html += '<div class="odetail" style="font-style:italic;">' + esc(item.notes || item.note) + '</div>';
@@ -1154,6 +1201,7 @@
         var category = document.getElementById('expCategory').value;
         var amount = parseFloat(document.getElementById('expAmount').value) || 0;
         var purchaseDate = document.getElementById('expDate').value;
+        var paidVia = document.getElementById('expPaidVia').value;
         var notes = document.getElementById('expNotes').value.trim();
 
         if (!title || amount <= 0 || !purchaseDate) {
@@ -1166,6 +1214,7 @@
           category: category,
           amount: amount,
           purchaseDate: purchaseDate,
+          paidVia: paidVia,
           notes: notes || null,
           time: new Date().toISOString()
         };
@@ -1182,6 +1231,7 @@
       saveCashoutBtn.addEventListener('click', function () {
         var amount = parseFloat(document.getElementById('coAmount').value) || 0;
         var purchaseDate = document.getElementById('coDate').value;
+        var paidVia = document.getElementById('coPaidVia').value;
         var note = document.getElementById('coNote').value.trim();
 
         if (amount <= 0 || !purchaseDate) {
@@ -1192,6 +1242,7 @@
         var cashoutData = {
           amount: amount,
           purchaseDate: purchaseDate,
+          paidVia: paidVia,
           note: note || null,
           time: new Date().toISOString()
         };
