@@ -65,6 +65,10 @@
   .pill.offline { background: #B34545; color: #fff; }
   .pill.online { background: #3A8F5C; color: #fff; }
 
+  .stock-badge { font-size: 11px; font-weight: 800; padding: 3px 9px; border-radius: 999px; background: #EADFAF; color: #6B4A20; }
+  .stock-badge.low { background: #F8D7DA; color: #721C24; }
+  .stock-badge.out { background: #B34545; color: #fff; }
+
   .filter-row { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
   .filter-btn { padding: 8px 14px; border-radius: 999px; border: 2px solid rgba(255,255,255,0.4); background: rgba(255,255,255,0.08); font-weight: 700; font-size: 12.5px; color: #F3F8FC; }
   .filter-btn.selected { background: #FDFBF3; border-color: #FDFBF3; color: #3D6690; }
@@ -249,6 +253,7 @@
   var salesList = [];
   var expenseList = [];
   var cashoutList = [];
+  var inventory = {};
   var state; // declared below, referenced by listeners
 
   function syncOrderCount() {
@@ -317,6 +322,14 @@
         }, function(err) {
           console.error('Cash out sync error:', err);
           alert('Could not load cash out data: ' + err.message);
+        });
+
+        fdb.onSnapshot(fdb.doc(fdb.db, "meta", "inventory"), function(docSnap) {
+          inventory = docSnap.exists() ? docSnap.data() : {};
+          if (state.view === 'order') renderOrderView();
+          if (state.view === 'sales') renderSalesView();
+        }, function(err) {
+          console.error('Inventory sync error:', err);
         });
       }
     }, 300);
@@ -400,6 +413,10 @@
     return d.toLocaleDateString(undefined, { year: 'numeric', month: 'long' });
   }
 
+  function getStock(flavorId) {
+    return (inventory && typeof inventory[flavorId] === 'number') ? inventory[flavorId] : null;
+  }
+
   function todayStr() {
     var d = new Date();
     return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
@@ -448,6 +465,32 @@
     return promise;
   }
 
+  function flavorCardHtml(f) {
+    var qty = state.cart[f.id] || 0;
+    var stock = getStock(f.id);
+    var outOfStock = stock !== null && stock <= 0;
+    var atStockLimit = stock !== null && qty >= stock;
+    var html = '<div class="flavor-card' + (qty ? ' has-qty' : '') + '">';
+    html += '<div class="flavor-top">' + cupSVG(f.tone, f.swirl) + '<div class="price-pill">' + peso(f.price) + '</div></div>';
+    html += '<h3>' + esc(f.name) + '</h3>';
+    html += '<p>' + esc(f.blurb) + '</p>';
+    if (stock !== null) {
+      var badgeClass = outOfStock ? 'out' : (stock <= 5 ? 'low' : '');
+      html += '<div style="margin-bottom:10px;"><span class="stock-badge' + (badgeClass ? ' ' + badgeClass : '') + '">' + (outOfStock ? 'Out of stock' : stock + ' left') + '</span></div>';
+    }
+    if (qty === 0) {
+      html += '<button class="add-btn" data-add="' + f.id + '"' + (outOfStock ? ' disabled style="opacity:.5;"' : '') + '>' + (outOfStock ? 'Out of stock' : 'Add to order') + '</button>';
+    } else {
+      html += '<div class="qty-row">';
+      html += '<button class="qty-btn qty-minus" data-remove="' + f.id + '">\u2212</button>';
+      html += '<span style="font-weight:800;font-size:15px;">' + qty + '</span>';
+      html += '<button class="qty-btn qty-plus" data-add="' + f.id + '"' + (atStockLimit ? ' disabled style="opacity:.5;"' : '') + '>+</button>';
+      html += '</div>';
+    }
+    html += '</div>';
+    return html;
+  }
+
   function renderOrderView() {
     var lines = cartLines();
     var total = cartTotal();
@@ -489,21 +532,7 @@
 
     html += '<div class="flavors">';
     FLAVORS.filter(function (f) { return (f.category || 'pudding') === 'pudding'; }).forEach(function (f) {
-      var qty = state.cart[f.id] || 0;
-      html += '<div class="flavor-card' + (qty ? ' has-qty' : '') + '">';
-      html += '<div class="flavor-top">' + cupSVG(f.tone, f.swirl) + '<div class="price-pill">' + peso(f.price) + '</div></div>';
-      html += '<h3>' + esc(f.name) + '</h3>';
-      html += '<p>' + esc(f.blurb) + '</p>';
-      if (qty === 0) {
-        html += '<button class="add-btn" data-add="' + f.id + '">Add to order</button>';
-      } else {
-        html += '<div class="qty-row">';
-        html += '<button class="qty-btn qty-minus" data-remove="' + f.id + '">\u2212</button>';
-        html += '<span style="font-weight:800;font-size:15px;">' + qty + '</span>';
-        html += '<button class="qty-btn qty-plus" data-add="' + f.id + '">+</button>';
-        html += '</div>';
-      }
-      html += '</div>';
+      html += flavorCardHtml(f);
     });
     html += '</div>';
 
@@ -512,21 +541,7 @@
       html += '<h2 class="heading" style="font-size:16px;color:#3D6690;margin:18px 0 10px;">Others</h2>';
       html += '<div class="flavors">';
       others.forEach(function (f) {
-        var qty = state.cart[f.id] || 0;
-        html += '<div class="flavor-card' + (qty ? ' has-qty' : '') + '">';
-        html += '<div class="flavor-top">' + cupSVG(f.tone, f.swirl) + '<div class="price-pill">' + peso(f.price) + '</div></div>';
-        html += '<h3>' + esc(f.name) + '</h3>';
-        html += '<p>' + esc(f.blurb) + '</p>';
-        if (qty === 0) {
-          html += '<button class="add-btn" data-add="' + f.id + '">Add to order</button>';
-        } else {
-          html += '<div class="qty-row">';
-          html += '<button class="qty-btn qty-minus" data-remove="' + f.id + '">\u2212</button>';
-          html += '<span style="font-weight:800;font-size:15px;">' + qty + '</span>';
-          html += '<button class="qty-btn qty-plus" data-add="' + f.id + '">+</button>';
-          html += '</div>';
-        }
-        html += '</div>';
+        html += flavorCardHtml(f);
       });
       html += '</div>';
     }
@@ -577,8 +592,12 @@
     var root = document.getElementById('orderView');
     root.querySelectorAll('[data-add]').forEach(function (btn) {
       btn.addEventListener('click', function () {
+        if (btn.disabled) return;
         var id = btn.getAttribute('data-add');
-        state.cart[id] = (state.cart[id] || 0) + 1;
+        var stock = getStock(id);
+        var currentQty = state.cart[id] || 0;
+        if (stock !== null && currentQty >= stock) return;
+        state.cart[id] = currentQty + 1;
         renderOrderView();
       });
     });
@@ -687,6 +706,14 @@
     if (window.FirebaseDB && window.FirebaseDB.db) {
       var fdb = window.FirebaseDB;
       withErr(fdb.addDoc(fdb.collection(fdb.db, "sales"), order), 'save the order');
+
+      var stockUpdates = {};
+      lines.forEach(function (l) {
+        if (getStock(l.id) !== null) stockUpdates[l.id] = fdb.increment(-l.qty);
+      });
+      if (Object.keys(stockUpdates).length > 0) {
+        withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "inventory"), stockUpdates, { merge: true }), 'update stock');
+      }
     }
 
     renderReceipt(order);
@@ -854,6 +881,46 @@
     });
     html += '</div>';
 
+    var otherFlavors = FLAVORS.filter(function (f) { return f.category === 'others'; });
+    if (otherFlavors.length > 0) {
+      var otherTotals = {};
+      otherFlavors.forEach(function (f) { otherTotals[f.id] = { qty: 0, revenue: 0 }; });
+      filteredSales.forEach(function (o) {
+        if (!isFulfilled(o) || !o.lines) return;
+        o.lines.forEach(function (l) {
+          if (otherTotals.hasOwnProperty(l.id)) {
+            otherTotals[l.id].qty += l.qty;
+            otherTotals[l.id].revenue += (l.subtotal != null ? l.subtotal : l.price * l.qty);
+          }
+        });
+      });
+
+      html += '<div class="field-card">';
+      html += '<h2 class="heading" style="font-size:17px;color:#3D6690;margin:0 0 10px;">Other Products \u2014 Sales</h2>';
+      otherFlavors.forEach(function (f) {
+        html += '<div class="stock-row">';
+        html += '<span class="fn">' + esc(f.name) + ' <span style="color:#8A8A78;font-weight:600;">(' + otherTotals[f.id].qty + ' sold)</span></span>';
+        html += '<span style="font-weight:800;color:#3D6690;">' + peso(otherTotals[f.id].revenue) + '</span>';
+        html += '</div>';
+      });
+      html += '<div class="hint" style="margin:6px 0 0;">Reflects whatever date filter is currently selected above.</div>';
+      html += '</div>';
+
+      html += '<div class="field-card">';
+      html += '<h2 class="heading" style="font-size:17px;color:#3D6690;margin:0 0 10px;">Other Products \u2014 Stock</h2>';
+      otherFlavors.forEach(function (f) {
+        var stock = getStock(f.id);
+        html += '<div class="stock-row">';
+        html += '<span class="fn">' + esc(f.name) + '</span>';
+        html += '<div style="display:flex;align-items:center;gap:8px;">';
+        html += '<input type="number" min="0" data-stock-input="' + f.id + '" placeholder="' + (stock === null ? 'not tracked' : stock) + '" />';
+        html += '<button class="mini-btn fulfill" data-set-stock="' + f.id + '">Set</button>';
+        html += '</div></div>';
+      });
+      html += '<div class="hint" style="margin:6px 0 0;">Set a stock number to start tracking. Leave untouched for unlimited stock.</div>';
+      html += '</div>';
+    }
+
     html += '<input type="text" id="salesSearchInput" placeholder="\uD83D\uDD0D Search by customer name" value="' + esc(state.salesSearch) + '" style="margin-bottom:14px;" />';
 
     var matchesSearch = function (o) { return !searchTerm || o.name.toLowerCase().indexOf(searchTerm) !== -1; };
@@ -942,6 +1009,20 @@
       });
     });
 
+    root.querySelectorAll('[data-set-stock]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-set-stock');
+        var input = root.querySelector('[data-stock-input="' + id + '"]');
+        var val = parseInt(input.value, 10);
+        if (isNaN(val) || val < 0) { alert('Enter a valid stock number (0 or more).'); return; }
+        if (fdb && fdb.db) {
+          var update = {};
+          update[id] = val;
+          withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "inventory"), update, { merge: true }), 'update stock');
+        }
+      });
+    });
+
     root.querySelectorAll('[data-start-fulfill]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         state.fulfillingId = btn.getAttribute('data-start-fulfill');
@@ -1000,6 +1081,15 @@
         if (!confirm('Void order #' + (order ? String(order.num).padStart(3, '0') : '') + '? This cannot be undone.')) return;
         if (fdb && fdb.db) {
           withErr(fdb.deleteDoc(fdb.doc(fdb.db, "sales", id)), 'void the order');
+          if (order && order.lines) {
+            var restock = {};
+            order.lines.forEach(function (l) {
+              if (getStock(l.id) !== null) restock[l.id] = fdb.increment(l.qty);
+            });
+            if (Object.keys(restock).length > 0) {
+              withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "inventory"), restock, { merge: true }), 'restock inventory');
+            }
+          }
         }
       });
     });
