@@ -722,7 +722,8 @@
     html += '<div class="top"><span class="oname">' + esc(o.name) + ' &middot; #' + String(o.num).padStart(3, '0') + '</span><span class="otime">' + fmtDate(o.fulfillDate) + '</span></div>';
     if (o.lines) {
       o.lines.forEach(function (l) {
-        html += '<div class="oline"><span><span class="oq">' + l.qty + '\u00d7</span>' + esc(l.name) + '</span></div>';
+        var lineTotal = l.subtotal != null ? l.subtotal : l.price * l.qty;
+        html += '<div class="oline"><span><span class="oq">' + l.qty + '\u00d7</span>' + esc(l.name) + ' <span style="color:#8A8A78;font-size:11px;">(' + peso(l.price) + ' ea)</span></span><span style="font-weight:800;">' + peso(lineTotal) + '</span></div>';
       });
     }
     html += '<div class="otubs">\uD83E\uDDCA Total: ' + totalTubs + ' tub' + (totalTubs === 1 ? '' : 's') + '</div>';
