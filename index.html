@@ -239,9 +239,10 @@
 <script>
 (function () {
   var FLAVORS = [
-    { id: 'classic', name: 'Classic Banana', price: 150, blurb: 'Fresh bananas, silky vanilla pudding, soft cookies & cream.', tone: '#EFE0A3', swirl: '#C9A227' },
-    { id: 'chocnut', name: 'Banana Chocnut', price: 170, blurb: 'Creamy banana pudding loaded with rich, nutty Chocnut.', tone: '#DCC7A1', swirl: '#7A4A2B' },
-    { id: 'caramel', name: 'Salted Caramel Crunch', price: 180, blurb: 'Sweet-salty caramel, creamy pudding, crispy cornflake crunch.', tone: '#E7B77A', swirl: '#B4692A' }
+    { id: 'classic', name: 'Classic Banana', price: 150, blurb: 'Fresh bananas, silky vanilla pudding, soft cookies & cream.', tone: '#EFE0A3', swirl: '#C9A227', category: 'pudding' },
+    { id: 'chocnut', name: 'Banana Chocnut', price: 170, blurb: 'Creamy banana pudding loaded with rich, nutty Chocnut.', tone: '#DCC7A1', swirl: '#7A4A2B', category: 'pudding' },
+    { id: 'caramel', name: 'Salted Caramel Crunch', price: 180, blurb: 'Sweet-salty caramel, creamy pudding, crispy cornflake crunch.', tone: '#E7B77A', swirl: '#B4692A', category: 'pudding' },
+    { id: 'peanutbutter', name: 'Peanut Butter', price: 150, blurb: 'Rich and creamy peanut butter, sweet and nutty.', tone: '#D9A85C', swirl: '#8A5A2B', category: 'others' }
   ];
   var PAYMENTS = ['Cash', 'GCash', 'RCBC', 'GoTyme'];
 
@@ -487,7 +488,7 @@
     html += '</div>';
 
     html += '<div class="flavors">';
-    FLAVORS.forEach(function (f) {
+    FLAVORS.filter(function (f) { return (f.category || 'pudding') === 'pudding'; }).forEach(function (f) {
       var qty = state.cart[f.id] || 0;
       html += '<div class="flavor-card' + (qty ? ' has-qty' : '') + '">';
       html += '<div class="flavor-top">' + cupSVG(f.tone, f.swirl) + '<div class="price-pill">' + peso(f.price) + '</div></div>';
@@ -505,6 +506,30 @@
       html += '</div>';
     });
     html += '</div>';
+
+    var others = FLAVORS.filter(function (f) { return f.category === 'others'; });
+    if (others.length > 0) {
+      html += '<h2 class="heading" style="font-size:16px;color:#3D6690;margin:18px 0 10px;">Others</h2>';
+      html += '<div class="flavors">';
+      others.forEach(function (f) {
+        var qty = state.cart[f.id] || 0;
+        html += '<div class="flavor-card' + (qty ? ' has-qty' : '') + '">';
+        html += '<div class="flavor-top">' + cupSVG(f.tone, f.swirl) + '<div class="price-pill">' + peso(f.price) + '</div></div>';
+        html += '<h3>' + esc(f.name) + '</h3>';
+        html += '<p>' + esc(f.blurb) + '</p>';
+        if (qty === 0) {
+          html += '<button class="add-btn" data-add="' + f.id + '">Add to order</button>';
+        } else {
+          html += '<div class="qty-row">';
+          html += '<button class="qty-btn qty-minus" data-remove="' + f.id + '">\u2212</button>';
+          html += '<span style="font-weight:800;font-size:15px;">' + qty + '</span>';
+          html += '<button class="qty-btn qty-plus" data-add="' + f.id + '">+</button>';
+          html += '</div>';
+        }
+        html += '</div>';
+      });
+      html += '</div>';
+    }
     html += '</div>';
 
     html += '<div class="cart-panel sticky">';
