@@ -840,6 +840,40 @@
     return html;
   }
 
+  function isIOS() {
+    return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  }
+
+  function showImageSaveModal(dataUrl, filename) {
+    var overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;inset:0;background:rgba(20,20,15,0.85);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:20px;gap:14px;';
+    var img = document.createElement('img');
+    img.src = dataUrl;
+    img.style.cssText = 'max-width:100%;max-height:70vh;border-radius:14px;box-shadow:0 12px 28px rgba(0,0,0,0.4);';
+    var hint = document.createElement('div');
+    hint.textContent = '\uD83D\uDCF2 Press and hold the image, then choose "Save to Photos"';
+    hint.style.cssText = 'color:#FDFBF3;font-weight:700;font-size:14px;text-align:center;';
+    var closeBtn = document.createElement('button');
+    closeBtn.textContent = 'Close';
+    closeBtn.className = 'mini-btn void';
+    closeBtn.style.cssText = 'padding:10px 20px;font-size:13px;';
+    closeBtn.addEventListener('click', function () { document.body.removeChild(overlay); });
+    var dlLink = document.createElement('a');
+    dlLink.href = dataUrl;
+    dlLink.download = filename;
+    dlLink.textContent = '\u2B07 Download';
+    dlLink.className = 'mini-btn fulfill';
+    dlLink.style.cssText = 'padding:10px 20px;font-size:13px;text-decoration:none;';
+    var btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:10px;';
+    btnRow.appendChild(dlLink);
+    btnRow.appendChild(closeBtn);
+    overlay.appendChild(img);
+    overlay.appendChild(hint);
+    overlay.appendChild(btnRow);
+    document.body.appendChild(overlay);
+  }
+
   function saveReceiptImage(order, sourceEl) {
     if (typeof html2canvas === 'undefined') {
       alert('Image export isn\u2019t available right now (couldn\u2019t load the image library). Check your internet connection and try again.');
@@ -859,13 +893,19 @@
       target = cleanupNode;
     }
     html2canvas(target, { backgroundColor: '#FDFBF3', scale: 2 }).then(function (canvas) {
-      var link = document.createElement('a');
-      link.download = 'wubber-receipt-' + String(order.num).padStart(3, '0') + '.png';
-      link.href = canvas.toDataURL('image/png');
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
+      var filename = 'wubber-receipt-' + String(order.num).padStart(3, '0') + '.png';
+      var dataUrl = canvas.toDataURL('image/png');
       if (cleanupNode) document.body.removeChild(cleanupNode);
+      if (isIOS()) {
+        showImageSaveModal(dataUrl, filename);
+      } else {
+        var link = document.createElement('a');
+        link.download = filename;
+        link.href = dataUrl;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      }
     }).catch(function (err) {
       console.error('Save image failed:', err);
       alert('Could not save the receipt image: ' + err.message);
