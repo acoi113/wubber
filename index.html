@@ -352,6 +352,7 @@
     payment: 'Cash',
     cash: '',
     orderNotes: '',
+    deliveryFee: '',
     loyaltyEnabled: false,
     loyaltyFlavorId: '',
     loyaltyTier: '10',
@@ -516,7 +517,8 @@
     var lines = cartLines();
     var subtotal = cartTotal();
     var discountInfo = loyaltyDiscountInfo();
-    var total = subtotal - (discountInfo ? discountInfo.amount : 0);
+    var deliveryFeeNum = state.delivery === 'Delivery' ? (parseFloat(state.deliveryFee) || 0) : 0;
+    var total = subtotal - (discountInfo ? discountInfo.amount : 0) + deliveryFeeNum;
     var cashNum = parseFloat(state.cash) || 0;
     var change = cashNum - total;
     var isPreOrder = isPreOrderDate(state.fulfillDate);
@@ -544,6 +546,9 @@
     if (state.delivery === 'Delivery') {
       html += '<label class="label" style="margin-top:12px;" for="addr">Delivery address</label>';
       html += '<textarea id="addr" placeholder="House / street, barangay, city">' + esc(state.address) + '</textarea>';
+
+      html += '<label class="label" style="margin-top:12px;" for="deliveryFeeInput">Delivery fee (optional \u2014 Lalamove/Grab, etc.)</label>';
+      html += '<input type="text" inputmode="decimal" id="deliveryFeeInput" placeholder="0.00" value="' + esc(state.deliveryFee) + '" />';
     }
 
     html += '<label class="label" style="margin-top:12px;" for="fulfillDate">' + (state.delivery === 'Delivery' ? 'Delivery date' : 'Pickup date') + '</label>';
@@ -606,9 +611,14 @@
     }
     html += '</div>';
 
-    if (discountInfo) {
+    if (discountInfo || deliveryFeeNum > 0) {
       html += '<div class="total-row" style="border-top:none;padding-top:8px;"><span class="lbl" style="font-size:13.5px;">Subtotal</span><span style="font-weight:700;color:#26374A;">' + peso(subtotal) + '</span></div>';
-      html += '<div class="total-row" style="border-top:none;padding-top:0;"><span class="lbl" style="font-size:13.5px;color:#8A5A3A;">Loyalty Discount (' + (discountInfo.pct * 100) + '% off ' + esc(discountInfo.flavorName) + ')</span><span style="font-weight:700;color:#B34545;">-' + peso(discountInfo.amount) + '</span></div>';
+      if (discountInfo) {
+        html += '<div class="total-row" style="border-top:none;padding-top:0;"><span class="lbl" style="font-size:13.5px;color:#8A5A3A;">Loyalty Discount (' + (discountInfo.pct * 100) + '% off ' + esc(discountInfo.flavorName) + ')</span><span style="font-weight:700;color:#B34545;">-' + peso(discountInfo.amount) + '</span></div>';
+      }
+      if (deliveryFeeNum > 0) {
+        html += '<div class="total-row" style="border-top:none;padding-top:0;"><span class="lbl" style="font-size:13.5px;">Delivery Fee</span><span style="font-weight:700;color:#26374A;">+' + peso(deliveryFeeNum) + '</span></div>';
+      }
     }
     html += '<div class="total-row"><span class="lbl">Total</span><span class="val">' + peso(total) + '</span></div>';
 
@@ -712,6 +722,15 @@
         checkCanCharge();
       });
     }
+    var deliveryFeeInput = document.getElementById('deliveryFeeInput');
+    if (deliveryFeeInput) {
+      deliveryFeeInput.addEventListener('input', function () {
+        state.deliveryFee = deliveryFeeInput.value;
+        renderOrderView();
+        var el = document.getElementById('deliveryFeeInput');
+        if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+      });
+    }
     var fulfillDateInput = document.getElementById('fulfillDate');
     if (fulfillDateInput) {
       fulfillDateInput.addEventListener('input', function () {
@@ -747,7 +766,8 @@
     var chargeBtn = document.getElementById('chargeBtn');
     var lines = cartLines();
     var discountInfo = loyaltyDiscountInfo();
-    var total = cartTotal() - (discountInfo ? discountInfo.amount : 0);
+    var deliveryFeeNum = state.delivery === 'Delivery' ? (parseFloat(state.deliveryFee) || 0) : 0;
+    var total = cartTotal() - (discountInfo ? discountInfo.amount : 0) + deliveryFeeNum;
     var cashNum = parseFloat(state.cash) || 0;
     var isPreOrder = isPreOrderDate(state.fulfillDate);
     var canCharge = lines.length > 0 && state.customerName.trim().length > 0 &&
@@ -760,7 +780,8 @@
     var lines = cartLines();
     var subtotal = cartTotal();
     var discountInfo = loyaltyDiscountInfo();
-    var total = subtotal - (discountInfo ? discountInfo.amount : 0);
+    var deliveryFeeNum = state.delivery === 'Delivery' ? (parseFloat(state.deliveryFee) || 0) : 0;
+    var total = subtotal - (discountInfo ? discountInfo.amount : 0) + deliveryFeeNum;
     var cashNum = parseFloat(state.cash) || 0;
     var isPreOrder = isPreOrderDate(state.fulfillDate);
     if (lines.length === 0 || !state.customerName.trim()) return;
@@ -775,6 +796,7 @@
       lines: lines,
       subtotal: subtotal,
       discount: discountInfo ? { flavorId: discountInfo.flavorId, flavorName: discountInfo.flavorName, tier: discountInfo.tier, amount: discountInfo.amount } : null,
+      deliveryFee: deliveryFeeNum || null,
       total: total,
       cash: isPreOrder ? null : cashNum,
       change: isPreOrder ? null : (cashNum - total),
@@ -809,6 +831,7 @@
     state.loyaltyEnabled = false;
     state.loyaltyFlavorId = '';
     state.loyaltyTier = '10';
+    state.deliveryFee = '';
 
     showView('receipt');
   }
@@ -827,9 +850,14 @@
       html += '<div class="rline"><span>' + l.qty + ' &times; ' + esc(l.name) + '</span><span style="font-weight:700;">' + peso(l.subtotal) + '</span></div>';
     });
     html += '<hr/>';
-    if (order.discount && order.discount.amount) {
+    if ((order.discount && order.discount.amount) || order.deliveryFee) {
       html += '<div class="rrow"><span>Subtotal</span><span>' + peso(order.subtotal != null ? order.subtotal : order.total) + '</span></div>';
-      html += '<div class="rrow" style="color:#8A5A3A;"><span>Loyalty Discount (' + esc(order.discount.tier) + '% off ' + esc(order.discount.flavorName) + ')</span><span>-' + peso(order.discount.amount) + '</span></div>';
+      if (order.discount && order.discount.amount) {
+        html += '<div class="rrow" style="color:#8A5A3A;"><span>Loyalty Discount (' + esc(order.discount.tier) + '% off ' + esc(order.discount.flavorName) + ')</span><span>-' + peso(order.discount.amount) + '</span></div>';
+      }
+      if (order.deliveryFee) {
+        html += '<div class="rrow"><span>Delivery Fee</span><span>+' + peso(order.deliveryFee) + '</span></div>';
+      }
     }
     html += '<div class="rrow bold"><span>Total</span><span>' + peso(order.total) + '</span></div>';
     if (order.status === 'Pre-order') {
@@ -843,15 +871,21 @@
     if (order.notes) {
       html += '<div class="rline" style="margin-top:6px;color:#8A8A78;"><strong>Note:</strong> ' + esc(order.notes) + '</div>';
     }
-    html += '<hr/>';
-    html += '<div class="rline" style="text-align:center;font-weight:800;color:#3D6690;margin:6px 0;">No cash? No problem \u2014 scan to pay!</div>';
-    html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
-    ['GCash', 'GoTyme', 'Maribank', 'UnionBank'].forEach(function (method) {
-      if (QR_CODES[method]) {
-        html += '<div style="text-align:center;"><img src="' + QR_CODES[method] + '" style="width:100%;border-radius:8px;" /></div>';
-      }
-    });
-    html += '</div>';
+    if (order.status === 'Pre-order') {
+      html += '<hr/>';
+      html += '<div class="rline" style="text-align:center;font-weight:800;color:#3D6690;margin:6px 0;">No cash? No problem \u2014 scan to pay!</div>';
+      html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
+      ['GCash', 'GoTyme', 'Maribank', 'UnionBank'].forEach(function (method) {
+        if (QR_CODES[method]) {
+          html += '<div style="text-align:center;"><img src="' + QR_CODES[method] + '" style="width:100%;border-radius:8px;" /></div>';
+        }
+      });
+      html += '</div>';
+    } else if (order.payment && QR_CODES[order.payment]) {
+      html += '<hr/>';
+      html += '<div class="rline" style="text-align:center;font-weight:800;color:#3D6690;margin:6px 0;">Scan to pay via ' + esc(order.payment) + '</div>';
+      html += '<div style="text-align:center;"><img src="' + QR_CODES[order.payment] + '" style="width:60%;border-radius:8px;" /></div>';
+    }
     return html;
   }
 
@@ -959,6 +993,9 @@
     html += '<div class="otubs">\uD83E\uDDCA Total: ' + totalTubs + ' tub' + (totalTubs === 1 ? '' : 's') + '</div>';
     if (o.discount && o.discount.amount) {
       html += '<div class="odetail" style="color:#8A5A3A;">\u2B50 Loyalty: -' + peso(o.discount.amount) + ' (' + esc(o.discount.tier) + '% off ' + esc(o.discount.flavorName) + ')</div>';
+    }
+    if (o.deliveryFee) {
+      html += '<div class="odetail">\uD83D\uDEF5 Delivery Fee: +' + peso(o.deliveryFee) + '</div>';
     }
     if (o.delivery === 'Delivery' && o.address) {
       html += '<div class="odetail">Deliver to: ' + esc(o.address) + '</div>';
