@@ -182,6 +182,7 @@
   .order-item .ototal { font-weight: 800; color: #3D6690; font-size: 15px; }
   .empty { text-align: center; color: #DCEBF7; padding: 40px 10px; font-weight: 600; }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 </head>
 <body>
 <div class="wrap">
@@ -246,9 +247,10 @@
     { id: 'classic', name: 'Classic Banana', price: 150, blurb: 'Fresh bananas, silky vanilla pudding, soft cookies & cream.', tone: '#EFE0A3', swirl: '#C9A227', category: 'pudding' },
     { id: 'chocnut', name: 'Banana Chocnut', price: 170, blurb: 'Creamy banana pudding loaded with rich, nutty Chocnut.', tone: '#DCC7A1', swirl: '#7A4A2B', category: 'pudding' },
     { id: 'caramel', name: 'Salted Caramel Crunch', price: 180, blurb: 'Sweet-salty caramel, creamy pudding, crispy cornflake crunch.', tone: '#E7B77A', swirl: '#B4692A', category: 'pudding' },
-    { id: 'peanutbutter', name: 'Peanut Butter', price: 150, blurb: 'Rich and creamy peanut butter, sweet and nutty.', tone: '#D9A85C', swirl: '#8A5A2B', category: 'others' }
+    { id: 'peanutbutter', name: 'Peanut Butter', price: 150, blurb: 'Rich and creamy peanut butter, sweet and nutty.', tone: '#D9A85C', swirl: '#8A5A2B', category: 'others' },
+    { id: 'nachos', name: 'Nachos', price: 250, blurb: 'Crispy nachos, loaded and ready to share.', tone: '#E8C468', swirl: '#A8631B', category: 'others' }
   ];
-  var PAYMENTS = ['Cash', 'GCash', 'RCBC', 'GoTyme'];
+  var PAYMENTS = ['Cash', 'GCash', 'RCBC', 'GoTyme', 'Maribank'];
 
   var salesList = [];
   var expenseList = [];
@@ -344,6 +346,9 @@
     payment: 'Cash',
     cash: '',
     orderNotes: '',
+    loyaltyEnabled: false,
+    loyaltyFlavorId: '',
+    loyaltyTier: '10',
     orderNum: 1,
     view: 'order',
     salesFilter: 'all',
@@ -441,6 +446,16 @@
     return cartLines().reduce(function (s, l) { return s + l.subtotal; }, 0);
   }
 
+  function loyaltyDiscountInfo() {
+    if (!state.loyaltyEnabled || !state.loyaltyFlavorId) return null;
+    var flavor = FLAVORS.find(function (f) { return f.id === state.loyaltyFlavorId; });
+    if (!flavor || flavor.category !== 'pudding') return null;
+    var qty = state.cart[flavor.id] || 0;
+    if (qty < 1) return null;
+    var pct = state.loyaltyTier === '50' ? 0.5 : 0.1;
+    return { flavorId: flavor.id, flavorName: flavor.name, tier: state.loyaltyTier, pct: pct, amount: flavor.price * pct };
+  }
+
   function cupSVG(tone, swirl) {
     return '<svg width="44" height="44" viewBox="0 0 64 64" aria-hidden="true">' +
       '<path d="M14 24 L18 56 Q32 61 46 56 L50 24 Z" fill="#C89A5B" stroke="#8A6636" stroke-width="1.5"/>' +
@@ -493,7 +508,9 @@
 
   function renderOrderView() {
     var lines = cartLines();
-    var total = cartTotal();
+    var subtotal = cartTotal();
+    var discountInfo = loyaltyDiscountInfo();
+    var total = subtotal - (discountInfo ? discountInfo.amount : 0);
     var cashNum = parseFloat(state.cash) || 0;
     var change = cashNum - total;
     var isPreOrder = isPreOrderDate(state.fulfillDate);
@@ -555,6 +572,37 @@
       lines.forEach(function (l) {
         html += '<div class="cart-line"><div><div class="nm">' + esc(l.name) + '</div><div class="qy">' + l.qty + ' &times; ' + peso(l.price) + '</div></div><div class="sub">' + peso(l.subtotal) + '</div></div>';
       });
+    }
+
+    var puddingInCart = lines.filter(function (l) {
+      var f = FLAVORS.find(function (ff) { return ff.id === l.id; });
+      return f && f.category === 'pudding';
+    });
+    html += '<div class="fulfill-form" style="margin-top:10px;">';
+    html += '<label style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:13.5px;color:#26374A;"><input type="checkbox" id="loyaltyToggle"' + (state.loyaltyEnabled ? ' checked' : '') + ' style="width:auto;" /> Apply loyalty stamp discount</label>';
+    if (state.loyaltyEnabled) {
+      if (puddingInCart.length === 0) {
+        html += '<div class="hint" style="margin-top:8px;">Add at least 1 pudding tub to the order to apply a loyalty discount.</div>';
+      } else {
+        html += '<label class="label" style="margin-top:10px;">Which tub gets the discount?</label>';
+        html += '<select id="loyaltyFlavorSelect">';
+        html += '<option value="">Select a tub</option>';
+        puddingInCart.forEach(function (l) {
+          html += '<option value="' + l.id + '"' + (state.loyaltyFlavorId === l.id ? ' selected' : '') + '>' + esc(l.name) + ' (' + peso(l.price) + ')</option>';
+        });
+        html += '</select>';
+        html += '<label class="label" style="margin-top:10px;">Discount tier</label>';
+        html += '<div class="pay-grid">';
+        html += '<button class="pay-btn' + (state.loyaltyTier === '10' ? ' selected' : '') + '" data-loyalty-tier="10">10% \u2014 5th stamp</button>';
+        html += '<button class="pay-btn' + (state.loyaltyTier === '50' ? ' selected' : '') + '" data-loyalty-tier="50">50% \u2014 10th stamp</button>';
+        html += '</div>';
+      }
+    }
+    html += '</div>';
+
+    if (discountInfo) {
+      html += '<div class="total-row" style="border-top:none;padding-top:8px;"><span class="lbl" style="font-size:13.5px;">Subtotal</span><span style="font-weight:700;color:#26374A;">' + peso(subtotal) + '</span></div>';
+      html += '<div class="total-row" style="border-top:none;padding-top:0;"><span class="lbl" style="font-size:13.5px;color:#8A5A3A;">Loyalty Discount (' + (discountInfo.pct * 100) + '% off ' + esc(discountInfo.flavorName) + ')</span><span style="font-weight:700;color:#B34545;">-' + peso(discountInfo.amount) + '</span></div>';
     }
     html += '<div class="total-row"><span class="lbl">Total</span><span class="val">' + peso(total) + '</span></div>';
 
@@ -623,6 +671,27 @@
         renderOrderView();
       });
     });
+    var loyaltyToggle = document.getElementById('loyaltyToggle');
+    if (loyaltyToggle) {
+      loyaltyToggle.addEventListener('change', function () {
+        state.loyaltyEnabled = loyaltyToggle.checked;
+        if (!state.loyaltyEnabled) state.loyaltyFlavorId = '';
+        renderOrderView();
+      });
+    }
+    var loyaltyFlavorSelect = document.getElementById('loyaltyFlavorSelect');
+    if (loyaltyFlavorSelect) {
+      loyaltyFlavorSelect.addEventListener('change', function () {
+        state.loyaltyFlavorId = loyaltyFlavorSelect.value;
+        renderOrderView();
+      });
+    }
+    root.querySelectorAll('[data-loyalty-tier]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        state.loyaltyTier = btn.getAttribute('data-loyalty-tier');
+        renderOrderView();
+      });
+    });
     var nameInput = document.getElementById('custName');
     if (nameInput) {
       nameInput.addEventListener('input', function () {
@@ -671,7 +740,8 @@
   function checkCanCharge() {
     var chargeBtn = document.getElementById('chargeBtn');
     var lines = cartLines();
-    var total = cartTotal();
+    var discountInfo = loyaltyDiscountInfo();
+    var total = cartTotal() - (discountInfo ? discountInfo.amount : 0);
     var cashNum = parseFloat(state.cash) || 0;
     var isPreOrder = isPreOrderDate(state.fulfillDate);
     var canCharge = lines.length > 0 && state.customerName.trim().length > 0 &&
@@ -682,7 +752,9 @@
 
   function charge() {
     var lines = cartLines();
-    var total = cartTotal();
+    var subtotal = cartTotal();
+    var discountInfo = loyaltyDiscountInfo();
+    var total = subtotal - (discountInfo ? discountInfo.amount : 0);
     var cashNum = parseFloat(state.cash) || 0;
     var isPreOrder = isPreOrderDate(state.fulfillDate);
     if (lines.length === 0 || !state.customerName.trim()) return;
@@ -695,6 +767,8 @@
       fulfillDate: state.fulfillDate,
       payment: isPreOrder ? null : state.payment,
       lines: lines,
+      subtotal: subtotal,
+      discount: discountInfo ? { flavorId: discountInfo.flavorId, flavorName: discountInfo.flavorName, tier: discountInfo.tier, amount: discountInfo.amount } : null,
       total: total,
       cash: isPreOrder ? null : cashNum,
       change: isPreOrder ? null : (cashNum - total),
@@ -726,14 +800,16 @@
     state.payment = 'Cash';
     state.cash = '';
     state.orderNotes = '';
+    state.loyaltyEnabled = false;
+    state.loyaltyFlavorId = '';
+    state.loyaltyTier = '10';
 
     showView('receipt');
   }
 
-  function renderReceipt(order) {
+  function receiptCardHtml(order) {
     var t = new Date(order.time);
-    var html = '<div class="receipt">';
-    html += '<div class="rname heading">WUBBER</div>';
+    var html = '<div class="rname heading">WUBBER</div>';
     html += '<div class="rsub">Pudding Cups</div>';
     html += '<div class="rmeta"><span>Order #' + String(order.num).padStart(3, '0') + '</span><span>' + t.toLocaleDateString() + ' ' + t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + '</span></div>';
     html += '<hr/>';
@@ -741,10 +817,14 @@
     html += '<div class="rline" style="color:#8A8A78;">' + order.delivery + (order.address ? ' &middot; ' + esc(order.address) : '') + '</div>';
     html += '<div class="rline" style="color:#8A8A78;">' + (order.delivery === 'Delivery' ? 'Deliver on ' : 'Pick up on ') + fmtDate(order.fulfillDate) + '</div>';
     html += '<hr/>';
-    order.lines.forEach(function (l) {
+    (order.lines || []).forEach(function (l) {
       html += '<div class="rline"><span>' + l.qty + ' &times; ' + esc(l.name) + '</span><span style="font-weight:700;">' + peso(l.subtotal) + '</span></div>';
     });
     html += '<hr/>';
+    if (order.discount && order.discount.amount) {
+      html += '<div class="rrow"><span>Subtotal</span><span>' + peso(order.subtotal != null ? order.subtotal : order.total) + '</span></div>';
+      html += '<div class="rrow" style="color:#8A5A3A;"><span>Loyalty Discount (' + esc(order.discount.tier) + '% off ' + esc(order.discount.flavorName) + ')</span><span>-' + peso(order.discount.amount) + '</span></div>';
+    }
     html += '<div class="rrow bold"><span>Total</span><span>' + peso(order.total) + '</span></div>';
     if (order.status === 'Pre-order') {
       html += '<div class="rline" style="color:#8A5A3A;font-weight:700;margin-top:6px;">\uD83D\uDCC5 Pre-order &mdash; payment due on ' + (order.delivery === 'Delivery' ? 'delivery' : 'pickup') + '.</div>';
@@ -753,16 +833,59 @@
       html += '<div class="rrow"><span>Cash</span><span>' + peso(order.cash) + '</span></div>';
       html += '<div class="rrow"><span>Change</span><span>' + peso(order.change) + '</span></div>';
     }
-    html += '<div class="thanks">Thanks for picking Wubber! 🍮</div>';
+    html += '<div class="thanks">Thanks for picking Wubber! \uD83C\uDF6E</div>';
     if (order.notes) {
       html += '<div class="rline" style="margin-top:6px;color:#8A8A78;"><strong>Note:</strong> ' + esc(order.notes) + '</div>';
     }
-    html += '<button class="charge-btn" id="newSaleBtn">Start new order</button>';
+    return html;
+  }
+
+  function saveReceiptImage(order, sourceEl) {
+    if (typeof html2canvas === 'undefined') {
+      alert('Image export isn\u2019t available right now (couldn\u2019t load the image library). Check your internet connection and try again.');
+      return;
+    }
+    var target = sourceEl;
+    var cleanupNode = null;
+    if (!target) {
+      cleanupNode = document.createElement('div');
+      cleanupNode.className = 'receipt';
+      cleanupNode.style.position = 'fixed';
+      cleanupNode.style.left = '-9999px';
+      cleanupNode.style.top = '0';
+      cleanupNode.style.width = '380px';
+      cleanupNode.innerHTML = receiptCardHtml(order);
+      document.body.appendChild(cleanupNode);
+      target = cleanupNode;
+    }
+    html2canvas(target, { backgroundColor: '#FDFBF3', scale: 2 }).then(function (canvas) {
+      var link = document.createElement('a');
+      link.download = 'wubber-receipt-' + String(order.num).padStart(3, '0') + '.png';
+      link.href = canvas.toDataURL('image/png');
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      if (cleanupNode) document.body.removeChild(cleanupNode);
+    }).catch(function (err) {
+      console.error('Save image failed:', err);
+      alert('Could not save the receipt image: ' + err.message);
+      if (cleanupNode) document.body.removeChild(cleanupNode);
+    });
+  }
+
+  function renderReceipt(order) {
+    var html = '<div class="receipt" id="liveReceiptCard">';
+    html += receiptCardHtml(order);
     html += '</div>';
+    html += '<button class="charge-btn" id="saveImageBtn" style="background:#3D6690;margin-top:10px;">\uD83D\uDCBE Save as Image</button>';
+    html += '<button class="charge-btn" id="newSaleBtn">Start new order</button>';
     document.getElementById('receiptView').innerHTML = html;
     document.getElementById('newSaleBtn').addEventListener('click', function () {
       renderOrderView();
       showView('order');
+    });
+    document.getElementById('saveImageBtn').addEventListener('click', function () {
+      saveReceiptImage(order, document.getElementById('liveReceiptCard'));
     });
   }
 
@@ -779,6 +902,9 @@
       });
     }
     html += '<div class="otubs">\uD83E\uDDCA Total: ' + totalTubs + ' tub' + (totalTubs === 1 ? '' : 's') + '</div>';
+    if (o.discount && o.discount.amount) {
+      html += '<div class="odetail" style="color:#8A5A3A;">\u2B50 Loyalty: -' + peso(o.discount.amount) + ' (' + esc(o.discount.tier) + '% off ' + esc(o.discount.flavorName) + ')</div>';
+    }
     if (o.delivery === 'Delivery' && o.address) {
       html += '<div class="odetail">Deliver to: ' + esc(o.address) + '</div>';
     }
@@ -810,6 +936,7 @@
       if (!fulfilled) {
         html += '<button class="mini-btn fulfill" data-start-fulfill="' + o.id + '">Mark Fulfilled</button>';
       }
+      html += '<button class="mini-btn export" data-save-receipt="' + o.id + '">\uD83D\uDCBE Save Receipt</button>';
       html += '<button class="mini-btn void" data-void-order="' + o.id + '">Void</button>';
       html += '</div>';
     }
@@ -1006,6 +1133,14 @@
         var current = state.salesExpanded.hasOwnProperty(key) ? state.salesExpanded[key] : (key === monthKeyOf(todayStr()));
         state.salesExpanded[key] = !current;
         renderSalesView();
+      });
+    });
+
+    root.querySelectorAll('[data-save-receipt]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-save-receipt');
+        var order = salesList.find(function (o) { return o.id === id; });
+        if (order) saveReceiptImage(order, null);
       });
     });
 
