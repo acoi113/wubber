@@ -353,6 +353,7 @@
     cash: '',
     orderNotes: '',
     deliveryFee: '',
+    editingOrderId: null,
     loyaltyEnabled: false,
     loyaltyFlavorId: '',
     loyaltyTier: '10',
@@ -532,6 +533,14 @@
     html += '<div>';
     html += '<h1 class="title heading">What\'s your pick?</h1>';
 
+    if (state.editingOrderId) {
+      var editingOrder = salesList.find(function (o) { return o.id === state.editingOrderId; });
+      html += '<div class="fulfill-form" style="background:#FBE8B8;margin-bottom:14px;">';
+      html += '<div style="font-weight:800;color:#6B4A20;">\u270F\uFE0F Editing Order #' + (editingOrder ? String(editingOrder.num).padStart(3, '0') : '') + '</div>';
+      html += '<button class="mini-btn void" id="cancelEditBtn" style="margin-top:8px;">Cancel Edit</button>';
+      html += '</div>';
+    }
+
     html += '<div class="field-card">';
     html += '<label class="label" for="custName">Order name</label>';
     html += '<input type="text" id="custName" placeholder="Customer name" value="' + esc(state.customerName) + '" />';
@@ -641,7 +650,7 @@
     html += '<label class="label" style="margin-top:12px;" for="orderNotesInput">Notes (optional)</label>';
     html += '<textarea id="orderNotesInput" rows="2" placeholder="e.g., no toppings, allergic to nuts">' + esc(state.orderNotes) + '</textarea>';
 
-    html += '<button class="charge-btn" id="chargeBtn"' + (canCharge ? '' : ' disabled') + '>' + (isPreOrder ? 'Save Pre-order' : 'Charge') + ' ' + (lines.length ? peso(total) : '') + '</button>';
+    html += '<button class="charge-btn" id="chargeBtn"' + (canCharge ? '' : ' disabled') + '>' + (state.editingOrderId ? 'Update Order' : (isPreOrder ? 'Save Pre-order' : 'Charge')) + ' ' + (lines.length ? peso(total) : '') + '</button>';
     if (lines.length > 0) {
       html += '<button class="clear-btn" id="clearBtn">Clear order</button>';
     }
@@ -654,6 +663,25 @@
 
   function wireOrderView() {
     var root = document.getElementById('orderView');
+    var cancelEditBtn = document.getElementById('cancelEditBtn');
+    if (cancelEditBtn) {
+      cancelEditBtn.addEventListener('click', function () {
+        state.editingOrderId = null;
+        state.cart = {};
+        state.customerName = '';
+        state.delivery = 'Pickup';
+        state.address = '';
+        state.fulfillDate = '';
+        state.payment = 'Cash';
+        state.cash = '';
+        state.orderNotes = '';
+        state.deliveryFee = '';
+        state.loyaltyEnabled = false;
+        state.loyaltyFlavorId = '';
+        state.loyaltyTier = '10';
+        renderOrderView();
+      });
+    }
     root.querySelectorAll('[data-add]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         if (btn.disabled) return;
@@ -776,6 +804,25 @@
     if (chargeBtn) chargeBtn.disabled = !canCharge;
   }
 
+  function editOrder(o) {
+    state.editingOrderId = o.id;
+    state.cart = {};
+    (o.lines || []).forEach(function (l) { state.cart[l.id] = l.qty; });
+    state.customerName = o.name || '';
+    state.delivery = o.delivery || 'Pickup';
+    state.address = o.address || '';
+    state.fulfillDate = o.fulfillDate || '';
+    state.payment = o.payment || 'Cash';
+    state.cash = o.cash != null ? String(o.cash) : '';
+    state.orderNotes = o.notes || '';
+    state.deliveryFee = o.deliveryFee != null ? String(o.deliveryFee) : '';
+    state.loyaltyEnabled = !!(o.discount && o.discount.amount);
+    state.loyaltyFlavorId = o.discount ? o.discount.flavorId : '';
+    state.loyaltyTier = o.discount ? o.discount.tier : '10';
+    renderOrderView();
+    showView('order');
+  }
+
   function charge() {
     var lines = cartLines();
     var subtotal = cartTotal();
@@ -785,6 +832,64 @@
     var cashNum = parseFloat(state.cash) || 0;
     var isPreOrder = isPreOrderDate(state.fulfillDate);
     if (lines.length === 0 || !state.customerName.trim()) return;
+
+    if (state.editingOrderId) {
+      var originalOrder = salesList.find(function (o) { return o.id === state.editingOrderId; });
+      var updatedFields = {
+        name: state.customerName.trim(),
+        delivery: state.delivery,
+        address: state.delivery === 'Delivery' ? state.address.trim() : '',
+        fulfillDate: state.fulfillDate,
+        payment: isPreOrder ? null : state.payment,
+        lines: lines,
+        subtotal: subtotal,
+        discount: discountInfo ? { flavorId: discountInfo.flavorId, flavorName: discountInfo.flavorName, tier: discountInfo.tier, amount: discountInfo.amount } : null,
+        deliveryFee: deliveryFeeNum || null,
+        total: total,
+        cash: isPreOrder ? null : cashNum,
+        change: isPreOrder ? null : (cashNum - total),
+        status: isPreOrder ? 'Pre-order' : 'Fulfilled',
+        notes: state.orderNotes.trim() || null,
+        editedAt: new Date().toISOString()
+      };
+
+      if (window.FirebaseDB && window.FirebaseDB.db) {
+        var fdb2 = window.FirebaseDB;
+        withErr(fdb2.updateDoc(fdb2.doc(fdb2.db, "sales", state.editingOrderId), updatedFields), 'update the order');
+
+        var oldQtyById = {};
+        (originalOrder && originalOrder.lines ? originalOrder.lines : []).forEach(function (l) { oldQtyById[l.id] = (oldQtyById[l.id] || 0) + l.qty; });
+        var newQtyById = {};
+        lines.forEach(function (l) { newQtyById[l.id] = (newQtyById[l.id] || 0) + l.qty; });
+        var stockDelta = {};
+        Object.keys(Object.assign({}, oldQtyById, newQtyById)).forEach(function (id) {
+          var delta = (newQtyById[id] || 0) - (oldQtyById[id] || 0);
+          if (delta !== 0 && getStock(id) !== null) stockDelta[id] = fdb2.increment(-delta);
+        });
+        if (Object.keys(stockDelta).length > 0) {
+          withErr(fdb2.setDoc(fdb2.doc(fdb2.db, "meta", "inventory"), stockDelta, { merge: true }), 'update stock');
+        }
+      }
+
+      state.editingOrderId = null;
+      state.cart = {};
+      state.customerName = '';
+      state.delivery = 'Pickup';
+      state.address = '';
+      state.fulfillDate = '';
+      state.payment = 'Cash';
+      state.cash = '';
+      state.orderNotes = '';
+      state.loyaltyEnabled = false;
+      state.loyaltyFlavorId = '';
+      state.loyaltyTier = '10';
+      state.deliveryFee = '';
+
+      renderOrderView();
+      showView('sales');
+      renderSalesView();
+      return;
+    }
 
     var order = {
       num: state.orderNum,
@@ -1028,6 +1133,7 @@
       if (!fulfilled) {
         html += '<button class="mini-btn fulfill" data-start-fulfill="' + o.id + '">Mark Fulfilled</button>';
       }
+      html += '<button class="mini-btn fulfill" data-edit-order="' + o.id + '">\u270F\uFE0F Edit</button>';
       html += '<button class="mini-btn export" data-save-receipt="' + o.id + '">\uD83D\uDCBE Save Receipt</button>';
       html += '<button class="mini-btn void" data-void-order="' + o.id + '">Void</button>';
       html += '</div>';
@@ -1225,6 +1331,14 @@
         var current = state.salesExpanded.hasOwnProperty(key) ? state.salesExpanded[key] : (key === monthKeyOf(todayStr()));
         state.salesExpanded[key] = !current;
         renderSalesView();
+      });
+    });
+
+    root.querySelectorAll('[data-edit-order]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-edit-order');
+        var order = salesList.find(function (o) { return o.id === id; });
+        if (order) editOrder(order);
       });
     });
 
