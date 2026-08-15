@@ -200,6 +200,7 @@
       <button class="pill" id="navOrderBtn">New Order</button>
       <button class="pill" id="navSalesBtn">Sales Log</button>
       <button class="pill" id="navExpenseBtn">Expenses</button>
+      <button class="pill" id="navRestockBtn">Restock</button>
     </div>
   </header>
 
@@ -207,6 +208,7 @@
   <div id="receiptView" style="display:none;"></div>
   <div id="salesView" style="display:none;"></div>
   <div id="expenseView" style="display:none;"></div>
+  <div id="restockView" style="display:none;"></div>
 </div>
 
 <!-- Firebase SDK -->
@@ -261,6 +263,7 @@
   var salesList = [];
   var expenseList = [];
   var cashoutList = [];
+  var restockList = [];
   var inventory = {};
   var state; // declared below, referenced by listeners
 
@@ -330,6 +333,16 @@
         }, function(err) {
           console.error('Cash out sync error:', err);
           alert('Could not load cash out data: ' + err.message);
+        });
+
+        var qRestock = fdb.query(fdb.collection(fdb.db, "restock"), fdb.orderBy("addedAt", "desc"));
+        fdb.onSnapshot(qRestock, function(snapshot) {
+          restockList = [];
+          snapshot.forEach(function(doc) { restockList.push(Object.assign({ id: doc.id }, doc.data())); });
+          if (state.view === 'restock') renderRestockView();
+        }, function(err) {
+          console.error('Restock sync error:', err);
+          alert('Could not load restock list: ' + err.message);
         });
 
         fdb.onSnapshot(fdb.doc(fdb.db, "meta", "inventory"), function(docSnap) {
@@ -1482,6 +1495,121 @@
     URL.revokeObjectURL(url);
   }
 
+  function renderRestockView() {
+    var lowStockFlavors = FLAVORS.filter(function (f) {
+      var stock = getStock(f.id);
+      return stock !== null && stock <= 5;
+    });
+
+    var html = '<h1 class="title heading">Restock Checklist</h1>';
+
+    if (lowStockFlavors.length > 0) {
+      html += '<div class="field-card" style="border:2px solid #B34545;">';
+      html += '<h2 class="heading" style="font-size:16px;color:#B34545;margin:0 0 10px;">\u26A0\uFE0F Low / Out of Stock</h2>';
+      lowStockFlavors.forEach(function (f) {
+        var stock = getStock(f.id);
+        html += '<div class="odetail">' + esc(f.name) + ' \u2014 ' + (stock <= 0 ? 'Out of stock' : stock + ' left') + '</div>';
+      });
+      html += '<div class="hint" style="margin-top:6px;">Tracked automatically from stock levels. Add these to your shopping list below if needed.</div>';
+      html += '</div>';
+    }
+
+    html += '<div class="field-card">';
+    html += '<label class="label" for="restockItemInput">Item to buy</label>';
+    html += '<input type="text" id="restockItemInput" placeholder="e.g., Bananas, Cups, Gas" />';
+    html += '<label class="label" style="margin-top:12px;" for="restockCategoryInput">Category</label>';
+    html += '<select id="restockCategoryInput">';
+    html += '<option>Ingredients</option><option>Packaging</option><option>Utilities</option><option>Delivery/Gas</option><option>Others</option>';
+    html += '</select>';
+    html += '<button class="charge-btn" id="addRestockBtn">Add to List</button>';
+    html += '</div>';
+
+    if (restockList.length > 0) {
+      html += '<div class="filter-row"><button class="filter-btn" id="resetRestockBtn">\u21BB Reset checklist for next trip</button></div>';
+    }
+
+    if (restockList.length === 0) {
+      html += '<div class="empty">Your shopping list is empty. Add items above.</div>';
+    } else {
+      var groups = {};
+      restockList.forEach(function (item) {
+        var cat = item.category || 'Others';
+        if (!groups[cat]) groups[cat] = [];
+        groups[cat].push(item);
+      });
+      Object.keys(groups).forEach(function (cat) {
+        html += '<h2 class="heading" style="font-size:15px;color:#3D6690;margin:14px 0 8px;">' + esc(cat) + '</h2>';
+        groups[cat].forEach(function (item) {
+          html += '<div class="order-item" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">';
+          html += '<label style="display:flex;align-items:center;gap:10px;flex:1;cursor:pointer;">';
+          html += '<input type="checkbox" data-toggle-restock="' + item.id + '"' + (item.checked ? ' checked' : '') + ' style="width:20px;height:20px;" />';
+          html += '<span style="' + (item.checked ? 'text-decoration:line-through;color:#8A8A78;' : 'font-weight:700;color:#26374A;') + '">' + esc(item.name) + '</span>';
+          html += '</label>';
+          html += '<button class="mini-btn void" data-delete-restock="' + item.id + '">Delete</button>';
+          html += '</div>';
+        });
+      });
+    }
+
+    document.getElementById('restockView').innerHTML = html;
+    wireRestockView();
+  }
+
+  function wireRestockView() {
+    var root = document.getElementById('restockView');
+    var fdb = window.FirebaseDB;
+
+    var addRestockBtn = document.getElementById('addRestockBtn');
+    if (addRestockBtn) {
+      addRestockBtn.addEventListener('click', function () {
+        var name = document.getElementById('restockItemInput').value.trim();
+        var category = document.getElementById('restockCategoryInput').value;
+        if (!name) { alert('Please enter an item name.'); return; }
+        if (fdb && fdb.db) {
+          withErr(fdb.addDoc(fdb.collection(fdb.db, "restock"), {
+            name: name,
+            category: category,
+            checked: false,
+            addedAt: new Date().toISOString()
+          }), 'add the item');
+        }
+      });
+    }
+
+    root.querySelectorAll('[data-toggle-restock]').forEach(function (cb) {
+      cb.addEventListener('change', function () {
+        var id = cb.getAttribute('data-toggle-restock');
+        if (fdb && fdb.db) {
+          withErr(fdb.updateDoc(fdb.doc(fdb.db, "restock", id), { checked: cb.checked }), 'update the item');
+        }
+      });
+    });
+
+    root.querySelectorAll('[data-delete-restock]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-delete-restock');
+        if (!confirm('Remove this item from the list?')) return;
+        if (fdb && fdb.db) {
+          withErr(fdb.deleteDoc(fdb.doc(fdb.db, "restock", id)), 'delete the item');
+        }
+      });
+    });
+
+    var resetRestockBtn = document.getElementById('resetRestockBtn');
+    if (resetRestockBtn) {
+      resetRestockBtn.addEventListener('click', function () {
+        if (!confirm('Uncheck all items for your next shopping trip?')) return;
+        if (fdb && fdb.db) {
+          restockList.forEach(function (item) {
+            if (item.checked) {
+              withErr(fdb.updateDoc(fdb.doc(fdb.db, "restock", item.id), { checked: false }), 'reset the checklist');
+            }
+          });
+        }
+      });
+    }
+  }
+
   function renderExpenseView() {
     var sub = state.expenseSubView;
     var html = '<div class="grid">';
@@ -1718,9 +1846,11 @@
     document.getElementById('receiptView').style.display = v === 'receipt' ? '' : 'none';
     document.getElementById('salesView').style.display = v === 'sales' ? '' : 'none';
     document.getElementById('expenseView').style.display = v === 'expense' ? '' : 'none';
+    document.getElementById('restockView').style.display = v === 'restock' ? '' : 'none';
     document.getElementById('navOrderBtn').classList.toggle('active', v === 'order' || v === 'receipt');
     document.getElementById('navSalesBtn').classList.toggle('active', v === 'sales');
     document.getElementById('navExpenseBtn').classList.toggle('active', v === 'expense');
+    document.getElementById('navRestockBtn').classList.toggle('active', v === 'restock');
   }
 
   document.getElementById('navOrderBtn').addEventListener('click', function () {
@@ -1734,6 +1864,11 @@
   document.getElementById('navExpenseBtn').addEventListener('click', function () {
     renderExpenseView();
     showView('expense');
+  });
+
+  document.getElementById('navRestockBtn').addEventListener('click', function () {
+    renderRestockView();
+    showView('restock');
   });
 
   renderOrderView();
