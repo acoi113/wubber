@@ -264,6 +264,7 @@
   var expenseList = [];
   var cashoutList = [];
   var restockList = [];
+  var ingredientList = [];
   var inventory = {};
   var state; // declared below, referenced by listeners
 
@@ -345,6 +346,16 @@
           alert('Could not load restock list: ' + err.message);
         });
 
+        var qIngredients = fdb.query(fdb.collection(fdb.db, "ingredients"), fdb.orderBy("name", "asc"));
+        fdb.onSnapshot(qIngredients, function(snapshot) {
+          ingredientList = [];
+          snapshot.forEach(function(doc) { ingredientList.push(Object.assign({ id: doc.id }, doc.data())); });
+          if (state.view === 'restock') renderRestockView();
+        }, function(err) {
+          console.error('Ingredient catalog sync error:', err);
+          alert('Could not load ingredient catalog: ' + err.message);
+        });
+
         fdb.onSnapshot(fdb.doc(fdb.db, "meta", "inventory"), function(docSnap) {
           inventory = docSnap.exists() ? docSnap.data() : {};
           if (state.view === 'order') renderOrderView();
@@ -367,6 +378,8 @@
     orderNotes: '',
     deliveryFee: '',
     editingOrderId: null,
+    paidNow: true,
+    prepaid: false,
     loyaltyEnabled: false,
     loyaltyFlavorId: '',
     loyaltyTier: '10',
@@ -536,10 +549,11 @@
     var cashNum = parseFloat(state.cash) || 0;
     var change = cashNum - total;
     var isPreOrder = isPreOrderDate(state.fulfillDate);
+    var needsDeferredPayment = isPreOrder || !state.paidNow;
     var canCharge = lines.length > 0 && state.customerName.trim().length > 0 &&
       (state.delivery === 'Pickup' || state.address.trim().length > 0) &&
       state.fulfillDate.trim().length > 0 &&
-      (isPreOrder || cashNum >= total);
+      (needsDeferredPayment || cashNum >= total);
 
     var html = '';
     html += '<div class="grid">';
@@ -644,8 +658,19 @@
     }
     html += '<div class="total-row"><span class="lbl">Total</span><span class="val">' + peso(total) + '</span></div>';
 
-    if (isPreOrder) {
-      html += '<div class="hint" style="margin-top:6px;">This is a pre-order. Payment method and cash will be collected when you mark it Fulfilled on pickup/delivery date.</div>';
+    if (!isPreOrder) {
+      html += '<label style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:13.5px;color:#26374A;margin-top:10px;"><input type="checkbox" id="paidNowToggle"' + (state.paidNow ? ' checked' : '') + ' style="width:auto;" /> Customer already paid?</label>';
+    }
+
+    if (needsDeferredPayment) {
+      html += '<div class="hint" style="margin-top:6px;">' + (isPreOrder ? 'This is a pre-order.' : 'This will be saved as Pending.') + ' Final payment method and cash amount will be confirmed when you mark it Fulfilled.</div>';
+      html += '<label class="label" style="margin-top:12px;">Preferred payment method (optional \u2014 shows matching QR on receipt)</label>';
+      html += '<div class="pay-grid">';
+      PAYMENTS.forEach(function (p) {
+        html += '<button class="pay-btn' + (state.payment === p ? ' selected' : '') + '" data-payment="' + p + '">' + p + '</button>';
+      });
+      html += '</div>';
+      html += '<label style="display:flex;align-items:center;gap:8px;font-weight:700;font-size:13.5px;color:#26374A;margin-top:12px;"><input type="checkbox" id="prepaidToggle"' + (state.prepaid ? ' checked' : '') + ' style="width:auto;" /> Already paid in advance?</label>';
     } else {
       html += '<label class="label" style="margin-top:12px;">Payment method</label>';
       html += '<div class="pay-grid">';
@@ -663,7 +688,7 @@
     html += '<label class="label" style="margin-top:12px;" for="orderNotesInput">Notes (optional)</label>';
     html += '<textarea id="orderNotesInput" rows="2" placeholder="e.g., no toppings, allergic to nuts">' + esc(state.orderNotes) + '</textarea>';
 
-    html += '<button class="charge-btn" id="chargeBtn"' + (canCharge ? '' : ' disabled') + '>' + (state.editingOrderId ? 'Update Order' : (isPreOrder ? 'Save Pre-order' : 'Charge')) + ' ' + (lines.length ? peso(total) : '') + '</button>';
+    html += '<button class="charge-btn" id="chargeBtn"' + (canCharge ? '' : ' disabled') + '>' + (state.editingOrderId ? 'Update Order' : (isPreOrder ? 'Save Pre-order' : (needsDeferredPayment ? 'Save as Pending' : 'Charge'))) + ' ' + (lines.length ? peso(total) : '') + '</button>';
     if (lines.length > 0) {
       html += '<button class="clear-btn" id="clearBtn">Clear order</button>';
     }
@@ -692,6 +717,8 @@
         state.loyaltyEnabled = false;
         state.loyaltyFlavorId = '';
         state.loyaltyTier = '10';
+        state.paidNow = true;
+        state.prepaid = false;
         renderOrderView();
       });
     }
@@ -733,6 +760,20 @@
       loyaltyToggle.addEventListener('change', function () {
         state.loyaltyEnabled = loyaltyToggle.checked;
         if (!state.loyaltyEnabled) state.loyaltyFlavorId = '';
+        renderOrderView();
+      });
+    }
+    var paidNowToggle = document.getElementById('paidNowToggle');
+    if (paidNowToggle) {
+      paidNowToggle.addEventListener('change', function () {
+        state.paidNow = paidNowToggle.checked;
+        renderOrderView();
+      });
+    }
+    var prepaidToggle = document.getElementById('prepaidToggle');
+    if (prepaidToggle) {
+      prepaidToggle.addEventListener('change', function () {
+        state.prepaid = prepaidToggle.checked;
         renderOrderView();
       });
     }
@@ -811,9 +852,10 @@
     var total = cartTotal() - (discountInfo ? discountInfo.amount : 0) + deliveryFeeNum;
     var cashNum = parseFloat(state.cash) || 0;
     var isPreOrder = isPreOrderDate(state.fulfillDate);
+    var needsDeferredPayment = isPreOrder || !state.paidNow;
     var canCharge = lines.length > 0 && state.customerName.trim().length > 0 &&
       (state.delivery === 'Pickup' || state.address.trim().length > 0) &&
-      state.fulfillDate.trim().length > 0 && (isPreOrder || cashNum >= total);
+      state.fulfillDate.trim().length > 0 && (needsDeferredPayment || cashNum >= total);
     if (chargeBtn) chargeBtn.disabled = !canCharge;
   }
 
@@ -832,6 +874,9 @@
     state.loyaltyEnabled = !!(o.discount && o.discount.amount);
     state.loyaltyFlavorId = o.discount ? o.discount.flavorId : '';
     state.loyaltyTier = o.discount ? o.discount.tier : '10';
+    var status = o.status || 'Fulfilled';
+    state.paidNow = status === 'Fulfilled';
+    state.prepaid = !!o.prepaid;
     renderOrderView();
     showView('order');
   }
@@ -844,6 +889,7 @@
     var total = subtotal - (discountInfo ? discountInfo.amount : 0) + deliveryFeeNum;
     var cashNum = parseFloat(state.cash) || 0;
     var isPreOrder = isPreOrderDate(state.fulfillDate);
+    var needsDeferredPayment = isPreOrder || !state.paidNow;
     if (lines.length === 0 || !state.customerName.trim()) return;
 
     if (state.editingOrderId) {
@@ -853,15 +899,16 @@
         delivery: state.delivery,
         address: state.delivery === 'Delivery' ? state.address.trim() : '',
         fulfillDate: state.fulfillDate,
-        payment: isPreOrder ? null : state.payment,
+        payment: state.payment,
         lines: lines,
         subtotal: subtotal,
         discount: discountInfo ? { flavorId: discountInfo.flavorId, flavorName: discountInfo.flavorName, tier: discountInfo.tier, amount: discountInfo.amount } : null,
         deliveryFee: deliveryFeeNum || null,
         total: total,
-        cash: isPreOrder ? null : cashNum,
-        change: isPreOrder ? null : (cashNum - total),
-        status: isPreOrder ? 'Pre-order' : 'Fulfilled',
+        cash: needsDeferredPayment ? null : cashNum,
+        change: needsDeferredPayment ? null : (cashNum - total),
+        status: isPreOrder ? 'Pre-order' : (needsDeferredPayment ? 'Pending' : 'Fulfilled'),
+        prepaid: needsDeferredPayment ? !!state.prepaid : null,
         notes: state.orderNotes.trim() || null,
         editedAt: new Date().toISOString()
       };
@@ -897,6 +944,8 @@
       state.loyaltyFlavorId = '';
       state.loyaltyTier = '10';
       state.deliveryFee = '';
+      state.paidNow = true;
+      state.prepaid = false;
 
       renderOrderView();
       showView('sales');
@@ -910,15 +959,16 @@
       delivery: state.delivery,
       address: state.delivery === 'Delivery' ? state.address.trim() : '',
       fulfillDate: state.fulfillDate,
-      payment: isPreOrder ? null : state.payment,
+      payment: state.payment,
       lines: lines,
       subtotal: subtotal,
       discount: discountInfo ? { flavorId: discountInfo.flavorId, flavorName: discountInfo.flavorName, tier: discountInfo.tier, amount: discountInfo.amount } : null,
       deliveryFee: deliveryFeeNum || null,
       total: total,
-      cash: isPreOrder ? null : cashNum,
-      change: isPreOrder ? null : (cashNum - total),
-      status: isPreOrder ? 'Pre-order' : 'Fulfilled',
+      cash: needsDeferredPayment ? null : cashNum,
+      change: needsDeferredPayment ? null : (cashNum - total),
+      status: isPreOrder ? 'Pre-order' : (needsDeferredPayment ? 'Pending' : 'Fulfilled'),
+      prepaid: needsDeferredPayment ? !!state.prepaid : null,
       notes: state.orderNotes.trim() || null,
       time: new Date().toISOString()
     };
@@ -950,14 +1000,20 @@
     state.loyaltyFlavorId = '';
     state.loyaltyTier = '10';
     state.deliveryFee = '';
+    state.paidNow = true;
+    state.prepaid = false;
 
     showView('receipt');
   }
 
   function receiptCardHtml(order) {
     var t = new Date(order.time);
+    var isUnpaidDeferred = (order.status === 'Pre-order' || order.status === 'Pending') && !order.prepaid;
     var html = '<div class="rname heading">WUBBER</div>';
     html += '<div class="rsub">Pudding Cups</div>';
+    if (isUnpaidDeferred) {
+      html += '<div style="background:#FBE8B8;color:#6B4A20;font-weight:800;text-align:center;padding:8px;border-radius:8px;margin-top:10px;font-size:13px;">\uD83E\uDDFE ORDER SUMMARY \u2014 NOT YET PAID</div>';
+    }
     html += '<div class="rmeta"><span>Order #' + String(order.num).padStart(3, '0') + '</span><span>' + t.toLocaleDateString() + ' ' + t.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + '</span></div>';
     html += '<hr/>';
     html += '<div class="rline" style="font-weight:800;">' + esc(order.name) + '</div>';
@@ -978,30 +1034,31 @@
       }
     }
     html += '<div class="rrow bold"><span>Total</span><span>' + peso(order.total) + '</span></div>';
-    if (order.status === 'Pre-order') {
-      html += '<div class="rline" style="color:#8A5A3A;font-weight:700;margin-top:6px;">\uD83D\uDCC5 Pre-order &mdash; payment due on ' + (order.delivery === 'Delivery' ? 'delivery' : 'pickup') + '.</div>';
+    var isDeferred = order.status === 'Pre-order' || order.status === 'Pending';
+    if (isDeferred) {
+      var dueWhen = order.delivery === 'Delivery' ? 'delivery' : 'pickup';
+      if (order.prepaid && order.payment) {
+        html += '<div class="rline" style="color:#3A8F5C;font-weight:700;margin-top:6px;">\u2705 Already paid via ' + esc(order.payment) + '.</div>';
+      } else {
+        html += '<div class="rline" style="color:#8A5A3A;font-weight:700;margin-top:6px;">\uD83D\uDCC5 ' + esc(order.status) + ' &mdash; payment due on ' + dueWhen + '.</div>';
+      }
     } else {
       html += '<div class="rrow"><span>Payment</span><span>' + order.payment + '</span></div>';
       html += '<div class="rrow"><span>Cash</span><span>' + peso(order.cash) + '</span></div>';
       html += '<div class="rrow"><span>Change</span><span>' + peso(order.change) + '</span></div>';
     }
-    html += '<div class="thanks">Thanks for picking Wubber! \uD83C\uDF6E</div>';
+    if (isUnpaidDeferred) {
+      html += '<div class="thanks">Please scan the QR below to pay \uD83D\uDC9B</div>';
+    } else {
+      html += '<div class="thanks">Thanks for picking Wubber! \uD83C\uDF6E</div>';
+    }
     if (order.notes) {
       html += '<div class="rline" style="margin-top:6px;color:#8A8A78;"><strong>Note:</strong> ' + esc(order.notes) + '</div>';
     }
-    if (order.status === 'Pre-order') {
+    if (order.payment && QR_CODES[order.payment]) {
+      var qrLabel = isUnpaidDeferred ? ('Scan to pay ' + peso(order.total) + ' via ' + order.payment) : (isDeferred ? 'Already paid via ' + order.payment : 'Paid via ' + order.payment);
       html += '<hr/>';
-      html += '<div class="rline" style="text-align:center;font-weight:800;color:#3D6690;margin:6px 0;">No cash? No problem \u2014 scan to pay!</div>';
-      html += '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
-      ['GCash', 'GoTyme', 'Maribank', 'UnionBank'].forEach(function (method) {
-        if (QR_CODES[method]) {
-          html += '<div style="text-align:center;"><img src="' + QR_CODES[method] + '" style="width:100%;border-radius:8px;" /></div>';
-        }
-      });
-      html += '</div>';
-    } else if (order.payment && QR_CODES[order.payment]) {
-      html += '<hr/>';
-      html += '<div class="rline" style="text-align:center;font-weight:800;color:#3D6690;margin:6px 0;">Scan to pay via ' + esc(order.payment) + '</div>';
+      html += '<div class="rline" style="text-align:center;font-weight:800;color:#3D6690;margin:6px 0;">' + esc(qrLabel) + '</div>';
       html += '<div style="text-align:center;"><img src="' + QR_CODES[order.payment] + '" style="width:60%;border-radius:8px;" /></div>';
     }
     return html;
@@ -1121,7 +1178,7 @@
     if (o.notes) {
       html += '<div class="odetail" style="font-style:italic;">Note: ' + esc(o.notes) + '</div>';
     }
-    html += '<div class="otags"><span class="tag">' + o.delivery + '</span>' + (o.payment ? '<span class="tag pay">' + o.payment + '</span>' : '') + '<span class="tag status-' + status.toLowerCase().replace(/\s+/g, '-') + '">' + status + '</span></div>';
+    html += '<div class="otags"><span class="tag">' + o.delivery + '</span>' + (o.payment ? '<span class="tag pay">' + o.payment + '</span>' : '') + '<span class="tag status-' + status.toLowerCase().replace(/\s+/g, '-') + '">' + status + '</span>' + (!fulfilled ? (o.prepaid ? '<span class="tag" style="background:#C9EAD2;color:#245A34;">\u2705 Prepaid</span>' : '<span class="tag" style="background:#F8D7DA;color:#721C24;">\u23F3 Unpaid</span>') : '') + '</div>';
     html += '<div style="display:flex;justify-content:flex-end;margin-top:6px;"><span class="ototal">' + peso(o.total) + '</span></div>';
 
     if (state.fulfillingId === o.id) {
@@ -1267,7 +1324,7 @@
     var fulfilledOrders = filteredSales.filter(function (o) { return isFulfilled(o) && matchesSearch(o); });
 
     if (preOrders.length > 0) {
-      html += '<h2 class="heading" style="font-size:16px;color:#8A5A3A;margin:0 0 8px;">\u23F3 Pending Pre-orders (' + preOrders.length + ')</h2>';
+      html += '<h2 class="heading" style="font-size:16px;color:#8A5A3A;margin:0 0 8px;">\u23F3 Awaiting Payment/Fulfillment (' + preOrders.length + ')</h2>';
       preOrders.forEach(function (o) { html += renderOrderCard(o); });
     }
 
@@ -1379,8 +1436,13 @@
 
     root.querySelectorAll('[data-start-fulfill]').forEach(function (btn) {
       btn.addEventListener('click', function () {
-        state.fulfillingId = btn.getAttribute('data-start-fulfill');
-        state.fulfillDraft = { payment: 'Cash', cash: '' };
+        var id = btn.getAttribute('data-start-fulfill');
+        var order = salesList.find(function (o) { return o.id === id; });
+        state.fulfillingId = id;
+        state.fulfillDraft = {
+          payment: (order && order.payment) || 'Cash',
+          cash: (order && order.prepaid) ? String(order.total) : ''
+        };
         renderSalesView();
       });
     });
@@ -1508,28 +1570,56 @@
       html += '<h2 class="heading" style="font-size:16px;color:#B34545;margin:0 0 10px;">\u26A0\uFE0F Low / Out of Stock</h2>';
       lowStockFlavors.forEach(function (f) {
         var stock = getStock(f.id);
-        html += '<div class="odetail">' + esc(f.name) + ' \u2014 ' + (stock <= 0 ? 'Out of stock' : stock + ' left') + '</div>';
+        var alreadyOnList = restockList.some(function (r) { return r.name === f.name; });
+        html += '<div class="odetail" style="display:flex;justify-content:space-between;align-items:center;">';
+        html += '<span>' + esc(f.name) + ' \u2014 ' + (stock <= 0 ? 'Out of stock' : stock + ' left') + '</span>';
+        if (!alreadyOnList) {
+          html += '<button class="mini-btn fulfill" data-quick-add-restock="' + esc(f.name) + '">+ Add to list</button>';
+        }
+        html += '</div>';
       });
-      html += '<div class="hint" style="margin-top:6px;">Tracked automatically from stock levels. Add these to your shopping list below if needed.</div>';
       html += '</div>';
     }
 
     html += '<div class="field-card">';
-    html += '<label class="label" for="restockItemInput">Item to buy</label>';
-    html += '<input type="text" id="restockItemInput" placeholder="e.g., Bananas, Cups, Gas" />';
-    html += '<label class="label" style="margin-top:12px;" for="restockCategoryInput">Category</label>';
-    html += '<select id="restockCategoryInput">';
+    html += '<h2 class="heading" style="font-size:16px;color:#3D6690;margin:0 0 10px;">Ingredient Catalog</h2>';
+    html += '<div class="hint" style="margin-bottom:10px;">Tap an ingredient to add it to this trip\u2019s shopping list.</div>';
+    if (ingredientList.length === 0) {
+      html += '<div class="hint">No ingredients saved yet. Add your first one below.</div>';
+    } else {
+      var catGroups = {};
+      ingredientList.forEach(function (ing) {
+        var cat = ing.category || 'Others';
+        if (!catGroups[cat]) catGroups[cat] = [];
+        catGroups[cat].push(ing);
+      });
+      Object.keys(catGroups).forEach(function (cat) {
+        html += '<div style="font-weight:800;font-size:12.5px;color:#8A8A78;margin:10px 0 6px;">' + esc(cat) + '</div>';
+        html += '<div style="display:flex;flex-wrap:wrap;gap:8px;">';
+        catGroups[cat].forEach(function (ing) {
+          var onList = restockList.some(function (r) { return r.ingredientId === ing.id; });
+          html += '<button class="filter-btn' + (onList ? ' selected' : '') + '" data-tap-ingredient="' + ing.id + '" style="color:#26374A;">' + (onList ? '\u2713 ' : '+ ') + esc(ing.name) + '</button>';
+        });
+        html += '</div>';
+      });
+    }
+    html += '<hr style="margin:14px 0;" />';
+    html += '<label class="label" for="newIngredientInput">Add new ingredient to catalog</label>';
+    html += '<input type="text" id="newIngredientInput" placeholder="e.g., Bananas, Cups, Pudding Mix" />';
+    html += '<label class="label" style="margin-top:10px;" for="newIngredientCategory">Category</label>';
+    html += '<select id="newIngredientCategory">';
     html += '<option>Ingredients</option><option>Packaging</option><option>Utilities</option><option>Delivery/Gas</option><option>Others</option>';
     html += '</select>';
-    html += '<button class="charge-btn" id="addRestockBtn">Add to List</button>';
+    html += '<button class="charge-btn" id="addIngredientBtn">Add to Catalog</button>';
     html += '</div>';
 
     if (restockList.length > 0) {
-      html += '<div class="filter-row"><button class="filter-btn" id="resetRestockBtn">\u21BB Reset checklist for next trip</button></div>';
+      html += '<div class="filter-row"><button class="filter-btn" id="resetRestockBtn">\u21BB Clear shopping list</button></div>';
     }
 
+    html += '<h2 class="heading" style="font-size:16px;color:#3D6690;margin:14px 0 8px;">This Trip\u2019s Shopping List</h2>';
     if (restockList.length === 0) {
-      html += '<div class="empty">Your shopping list is empty. Add items above.</div>';
+      html += '<div class="empty">Nothing on your list yet. Tap ingredients above to add them.</div>';
     } else {
       var groups = {};
       restockList.forEach(function (item) {
@@ -1538,14 +1628,17 @@
         groups[cat].push(item);
       });
       Object.keys(groups).forEach(function (cat) {
-        html += '<h2 class="heading" style="font-size:15px;color:#3D6690;margin:14px 0 8px;">' + esc(cat) + '</h2>';
+        html += '<div style="font-weight:800;font-size:12.5px;color:#8A8A78;margin:10px 0 6px;">' + esc(cat) + '</div>';
         groups[cat].forEach(function (item) {
-          html += '<div class="order-item" style="display:flex;align-items:center;justify-content:space-between;gap:10px;">';
-          html += '<label style="display:flex;align-items:center;gap:10px;flex:1;cursor:pointer;">';
+          html += '<div class="order-item" style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">';
+          html += '<label style="display:flex;align-items:center;gap:10px;cursor:pointer;">';
           html += '<input type="checkbox" data-toggle-restock="' + item.id + '"' + (item.checked ? ' checked' : '') + ' style="width:20px;height:20px;" />';
           html += '<span style="' + (item.checked ? 'text-decoration:line-through;color:#8A8A78;' : 'font-weight:700;color:#26374A;') + '">' + esc(item.name) + '</span>';
           html += '</label>';
+          html += '<div style="display:flex;align-items:center;gap:6px;">';
+          html += '<input type="text" data-qty-input="' + item.id + '" placeholder="qty (e.g. 2 kg)" value="' + esc(item.quantity || '') + '" style="width:120px;padding:6px 8px;font-size:12.5px;" />';
           html += '<button class="mini-btn void" data-delete-restock="' + item.id + '">Delete</button>';
+          html += '</div>';
           html += '</div>';
         });
       });
@@ -1559,19 +1652,48 @@
     var root = document.getElementById('restockView');
     var fdb = window.FirebaseDB;
 
-    var addRestockBtn = document.getElementById('addRestockBtn');
-    if (addRestockBtn) {
-      addRestockBtn.addEventListener('click', function () {
-        var name = document.getElementById('restockItemInput').value.trim();
-        var category = document.getElementById('restockCategoryInput').value;
-        if (!name) { alert('Please enter an item name.'); return; }
+    function addToRestockList(name, category, ingredientId) {
+      if (!fdb || !fdb.db) return;
+      var already = restockList.some(function (r) { return (ingredientId && r.ingredientId === ingredientId) || r.name === name; });
+      if (already) return;
+      withErr(fdb.addDoc(fdb.collection(fdb.db, "restock"), {
+        name: name,
+        category: category || 'Others',
+        ingredientId: ingredientId || null,
+        quantity: '',
+        checked: false,
+        addedAt: new Date().toISOString()
+      }), 'add the item');
+    }
+
+    root.querySelectorAll('[data-quick-add-restock]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        addToRestockList(btn.getAttribute('data-quick-add-restock'), 'Ingredients', null);
+      });
+    });
+
+    root.querySelectorAll('[data-tap-ingredient]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-tap-ingredient');
+        var ing = ingredientList.find(function (i) { return i.id === id; });
+        if (!ing) return;
+        var existing = restockList.find(function (r) { return r.ingredientId === id; });
+        if (existing) {
+          if (fdb && fdb.db) withErr(fdb.deleteDoc(fdb.doc(fdb.db, "restock", existing.id)), 'remove the item');
+        } else {
+          addToRestockList(ing.name, ing.category, ing.id);
+        }
+      });
+    });
+
+    var addIngredientBtn = document.getElementById('addIngredientBtn');
+    if (addIngredientBtn) {
+      addIngredientBtn.addEventListener('click', function () {
+        var name = document.getElementById('newIngredientInput').value.trim();
+        var category = document.getElementById('newIngredientCategory').value;
+        if (!name) { alert('Please enter an ingredient name.'); return; }
         if (fdb && fdb.db) {
-          withErr(fdb.addDoc(fdb.collection(fdb.db, "restock"), {
-            name: name,
-            category: category,
-            checked: false,
-            addedAt: new Date().toISOString()
-          }), 'add the item');
+          withErr(fdb.addDoc(fdb.collection(fdb.db, "ingredients"), { name: name, category: category }), 'add to the catalog');
         }
       });
     }
@@ -1585,10 +1707,23 @@
       });
     });
 
+    root.querySelectorAll('[data-qty-input]').forEach(function (input) {
+      input.addEventListener('input', function () {
+        var id = input.getAttribute('data-qty-input');
+        var item = restockList.find(function (r) { return r.id === id; });
+        if (item) item.quantity = input.value;
+      });
+      input.addEventListener('blur', function () {
+        var id = input.getAttribute('data-qty-input');
+        if (fdb && fdb.db) {
+          withErr(fdb.updateDoc(fdb.doc(fdb.db, "restock", id), { quantity: input.value }), 'save the quantity');
+        }
+      });
+    });
+
     root.querySelectorAll('[data-delete-restock]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         var id = btn.getAttribute('data-delete-restock');
-        if (!confirm('Remove this item from the list?')) return;
         if (fdb && fdb.db) {
           withErr(fdb.deleteDoc(fdb.doc(fdb.db, "restock", id)), 'delete the item');
         }
@@ -1598,12 +1733,10 @@
     var resetRestockBtn = document.getElementById('resetRestockBtn');
     if (resetRestockBtn) {
       resetRestockBtn.addEventListener('click', function () {
-        if (!confirm('Uncheck all items for your next shopping trip?')) return;
+        if (!confirm('Clear the whole shopping list? Your ingredient catalog will stay saved for next time.')) return;
         if (fdb && fdb.db) {
           restockList.forEach(function (item) {
-            if (item.checked) {
-              withErr(fdb.updateDoc(fdb.doc(fdb.db, "restock", item.id), { checked: false }), 'reset the checklist');
-            }
+            withErr(fdb.deleteDoc(fdb.doc(fdb.db, "restock", item.id)), 'clear the list');
           });
         }
       });
