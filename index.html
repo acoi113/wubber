@@ -249,6 +249,7 @@
     { id: 'classic', name: 'Classic Banana', price: 150, blurb: 'Fresh bananas, silky vanilla pudding, soft cookies & cream.', tone: '#EFE0A3', swirl: '#C9A227', category: 'pudding' },
     { id: 'chocnut', name: 'Banana Chocnut', price: 170, blurb: 'Creamy banana pudding loaded with rich, nutty Chocnut.', tone: '#DCC7A1', swirl: '#7A4A2B', category: 'pudding' },
     { id: 'caramel', name: 'Salted Caramel Crunch', price: 180, blurb: 'Sweet-salty caramel, creamy pudding, crispy cornflake crunch.', tone: '#E7B77A', swirl: '#B4692A', category: 'pudding' },
+    { id: 'lemoncheesecake', name: 'Lemon Cheesecake', price: 170, blurb: 'Tangy lemon curd swirled with creamy cheesecake pudding.', tone: '#F2E6A8', swirl: '#C9B23A', category: 'pudding' },
     { id: 'peanutbutter', name: 'Peanut Butter', price: 150, blurb: 'Rich and creamy peanut butter, sweet and nutty.', tone: '#D9A85C', swirl: '#8A5A2B', category: 'others' },
     { id: 'nachos', name: 'Nachos', price: 250, blurb: 'Crispy nachos, loaded and ready to share.', tone: '#E8C468', swirl: '#A8631B', category: 'others' }
   ];
@@ -265,6 +266,7 @@
   var cashoutList = [];
   var restockList = [];
   var ingredientList = [];
+  var recipeList = [];
   var inventory = {};
   var state; // declared below, referenced by listeners
 
@@ -350,6 +352,7 @@
         fdb.onSnapshot(qIngredients, function(snapshot) {
           ingredientList = [];
           snapshot.forEach(function(doc) { ingredientList.push(Object.assign({ id: doc.id }, doc.data())); });
+          ingredientList.sort(function(a, b) { return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }); });
           if (state.view === 'restock') renderRestockView();
         }, function(err) {
           console.error('Ingredient catalog sync error:', err);
@@ -362,6 +365,16 @@
           if (state.view === 'sales') renderSalesView();
         }, function(err) {
           console.error('Inventory sync error:', err);
+        });
+
+        var qRecipes = fdb.query(fdb.collection(fdb.db, "recipes"), fdb.orderBy("name", "asc"));
+        fdb.onSnapshot(qRecipes, function(snapshot) {
+          recipeList = [];
+          snapshot.forEach(function(doc) { recipeList.push(Object.assign({ id: doc.id }, doc.data())); });
+          if (state.view === 'restock') renderRestockView();
+        }, function(err) {
+          console.error('Recipe sync error:', err);
+          alert('Could not load batch recipes: ' + err.message);
         });
       }
     }, 300);
@@ -380,6 +393,9 @@
     editingOrderId: null,
     paidNow: true,
     prepaid: false,
+    batchRecipeId: '',
+    batchCount: '1',
+    batchItemChecks: {},
     loyaltyEnabled: false,
     loyaltyFlavorId: '',
     loyaltyTier: '10',
@@ -1557,6 +1573,12 @@
     URL.revokeObjectURL(url);
   }
 
+  function formatQty(amount, unit) {
+    var n = Math.round(amount * 100) / 100;
+    var numStr = (n % 1 === 0) ? String(n) : String(n);
+    return numStr + (unit ? ' ' + unit : '');
+  }
+
   function renderRestockView() {
     var lowStockFlavors = FLAVORS.filter(function (f) {
       var stock = getStock(f.id);
@@ -1611,6 +1633,55 @@
     html += '<option>Ingredients</option><option>Packaging</option><option>Utilities</option><option>Delivery/Gas</option><option>Others</option>';
     html += '</select>';
     html += '<button class="charge-btn" id="addIngredientBtn">Add to Catalog</button>';
+    html += '</div>';
+
+    html += '<div class="field-card">';
+    html += '<h2 class="heading" style="font-size:16px;color:#3D6690;margin:0 0 10px;">\uD83E\uDDFA Quick Add Batch</h2>';
+    html += '<label class="label" for="batchRecipeSelect">Recipe</label>';
+    html += '<select id="batchRecipeSelect">';
+    html += '<option value="">Select a recipe</option>';
+    recipeList.forEach(function (r) {
+      html += '<option value="' + r.id + '"' + (state.batchRecipeId === r.id ? ' selected' : '') + '>' + esc(r.name) + '</option>';
+    });
+    html += '</select>';
+
+    var selectedRecipe = recipeList.find(function (r) { return r.id === state.batchRecipeId; });
+    if (selectedRecipe) {
+      html += '<label class="label" style="margin-top:10px;" for="batchCountInput"># of batches</label>';
+      html += '<input type="number" id="batchCountInput" min="1" value="' + esc(state.batchCount) + '" />';
+      html += '<div class="hint" style="margin:10px 0 6px;">Uncheck anything you already have on hand:</div>';
+      (selectedRecipe.items || []).forEach(function (item, idx) {
+        var checked = state.batchItemChecks.hasOwnProperty(idx) ? state.batchItemChecks[idx] : true;
+        var count = parseFloat(state.batchCount) || 1;
+        html += '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13.5px;color:#26374A;">';
+        html += '<input type="checkbox" data-batch-item-check="' + idx + '"' + (checked ? ' checked' : '') + ' style="width:18px;height:18px;" />';
+        html += '<span>' + esc(item.name) + ' \u2014 ' + formatQty(item.amount * count, item.unit) + '</span>';
+        html += '</label>';
+      });
+      html += '<button class="charge-btn" id="addBatchBtn" style="margin-top:10px;">Add Selected to List</button>';
+    }
+    html += '</div>';
+
+    html += '<div class="field-card">';
+    html += '<h2 class="heading" style="font-size:16px;color:#3D6690;margin:0 0 10px;">Manage Batch Recipes</h2>';
+    if (recipeList.length === 0) {
+      html += '<button class="filter-btn" id="loadStarterRecipesBtn" style="margin-bottom:14px;color:#26374A;">\u2728 Load Starter Recipes (Pudding & Nachos)</button>';
+    }
+    if (recipeList.length > 0) {
+      recipeList.forEach(function (r) {
+        html += '<div class="odetail" style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">';
+        html += '<span><strong>' + esc(r.name) + '</strong> (' + (r.items || []).length + ' ingredients)</span>';
+        html += '<button class="mini-btn void" data-delete-recipe="' + r.id + '">Delete</button>';
+        html += '</div>';
+      });
+      html += '<hr style="margin:10px 0;" />';
+    }
+    html += '<label class="label" for="newRecipeName">New recipe name</label>';
+    html += '<input type="text" id="newRecipeName" placeholder="e.g., Pudding Batch" />';
+    html += '<label class="label" style="margin-top:10px;" for="newRecipeItems">Ingredients (one per line: Name, Amount, Unit)</label>';
+    html += '<textarea id="newRecipeItems" rows="6" placeholder="Bananas, 6, pcs\nCondensed Milk, 0.5, can\nEggs, 4, pcs"></textarea>';
+    html += '<div class="hint" style="margin-top:6px;">Use decimals for fractions, e.g. 0.5 for \u00bd.</div>';
+    html += '<button class="charge-btn" id="addRecipeBtn">Save Recipe</button>';
     html += '</div>';
 
     if (restockList.length > 0) {
@@ -1682,6 +1753,120 @@
           if (fdb && fdb.db) withErr(fdb.deleteDoc(fdb.doc(fdb.db, "restock", existing.id)), 'remove the item');
         } else {
           addToRestockList(ing.name, ing.category, ing.id);
+        }
+      });
+    });
+
+    var batchRecipeSelect = document.getElementById('batchRecipeSelect');
+    if (batchRecipeSelect) {
+      batchRecipeSelect.addEventListener('change', function () {
+        state.batchRecipeId = batchRecipeSelect.value;
+        state.batchItemChecks = {};
+        state.batchCount = '1';
+        renderRestockView();
+      });
+    }
+
+    var batchCountInput = document.getElementById('batchCountInput');
+    if (batchCountInput) {
+      batchCountInput.addEventListener('input', function () {
+        state.batchCount = batchCountInput.value;
+        renderRestockView();
+        var el = document.getElementById('batchCountInput');
+        if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+      });
+    }
+
+    root.querySelectorAll('[data-batch-item-check]').forEach(function (cb) {
+      cb.addEventListener('change', function () {
+        var idx = cb.getAttribute('data-batch-item-check');
+        state.batchItemChecks[idx] = cb.checked;
+      });
+    });
+
+    var addBatchBtn = document.getElementById('addBatchBtn');
+    if (addBatchBtn) {
+      addBatchBtn.addEventListener('click', function () {
+        var recipe = recipeList.find(function (r) { return r.id === state.batchRecipeId; });
+        if (!recipe || !fdb || !fdb.db) return;
+        var count = parseFloat(state.batchCount) || 1;
+        (recipe.items || []).forEach(function (item, idx) {
+          var checked = state.batchItemChecks.hasOwnProperty(idx) ? state.batchItemChecks[idx] : true;
+          if (!checked) return;
+          var already = restockList.some(function (r) { return r.name.toLowerCase() === item.name.toLowerCase(); });
+          if (already) return;
+          withErr(fdb.addDoc(fdb.collection(fdb.db, "restock"), {
+            name: item.name,
+            category: 'Ingredients',
+            ingredientId: null,
+            quantity: formatQty(item.amount * count, item.unit),
+            checked: false,
+            addedAt: new Date().toISOString()
+          }), 'add the item');
+        });
+        state.batchRecipeId = '';
+        state.batchItemChecks = {};
+        state.batchCount = '1';
+      });
+    }
+
+    var loadStarterRecipesBtn = document.getElementById('loadStarterRecipesBtn');
+    if (loadStarterRecipesBtn) {
+      loadStarterRecipesBtn.addEventListener('click', function () {
+        if (!fdb || !fdb.db) return;
+        withErr(fdb.addDoc(fdb.collection(fdb.db, "recipes"), {
+          name: 'Pudding Batch',
+          items: [
+            { name: 'Condensed Milk', amount: 0.5, unit: 'can' },
+            { name: 'All Purpose Cream', amount: 3, unit: 'pcs' },
+            { name: 'Banana (Lakatan)', amount: 6, unit: 'pcs' },
+            { name: 'Eggs', amount: 4, unit: 'pcs' },
+            { name: 'Eggnog (big)', amount: 3, unit: 'pcs' },
+            { name: 'Evaporated Milk', amount: 1, unit: 'can' }
+          ]
+        }), 'add the Pudding Batch recipe');
+        withErr(fdb.addDoc(fdb.collection(fdb.db, "recipes"), {
+          name: 'Nachos Batch',
+          items: [
+            { name: 'Cheez Whiz (small)', amount: 1, unit: 'pc' },
+            { name: 'All Purpose Cream', amount: 1, unit: 'pc' },
+            { name: 'Quickmelt', amount: 1, unit: 'pc' },
+            { name: 'Taco Powder', amount: 1, unit: 'pack' },
+            { name: 'Ground Round', amount: 200, unit: 'g' },
+            { name: 'Nacho Chips (big pack)', amount: 1, unit: 'pack' }
+          ]
+        }), 'add the Nachos Batch recipe');
+      });
+    }
+
+    var addRecipeBtn = document.getElementById('addRecipeBtn');
+    if (addRecipeBtn) {
+      addRecipeBtn.addEventListener('click', function () {
+        var name = document.getElementById('newRecipeName').value.trim();
+        var rawItems = document.getElementById('newRecipeItems').value;
+        if (!name) { alert('Please enter a recipe name.'); return; }
+        var items = [];
+        rawItems.split('\n').forEach(function (line) {
+          var parts = line.split(',');
+          if (parts.length < 2) return;
+          var itemName = parts[0].trim();
+          var amount = parseFloat(parts[1]);
+          var unit = parts.length > 2 ? parts[2].trim() : '';
+          if (itemName && !isNaN(amount)) items.push({ name: itemName, amount: amount, unit: unit });
+        });
+        if (items.length === 0) { alert('Please add at least one valid ingredient line (Name, Amount, Unit).'); return; }
+        if (fdb && fdb.db) {
+          withErr(fdb.addDoc(fdb.collection(fdb.db, "recipes"), { name: name, items: items }), 'save the recipe');
+        }
+      });
+    }
+
+    root.querySelectorAll('[data-delete-recipe]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-delete-recipe');
+        if (!confirm('Delete this recipe?')) return;
+        if (fdb && fdb.db) {
+          withErr(fdb.deleteDoc(fdb.doc(fdb.db, "recipes", id)), 'delete the recipe');
         }
       });
     });
