@@ -273,6 +273,7 @@
   var recipeList = [];
   var popupSalesList = [];
   var popupInventory = {};
+  var popupEventName = '';
   var inventory = {};
   var state; // declared below, referenced by listeners
 
@@ -399,6 +400,13 @@
         }, function(err) {
           console.error('Pop-up inventory sync error:', err);
         });
+
+        fdb.onSnapshot(fdb.doc(fdb.db, "meta", "popupEvent"), function(docSnap) {
+          popupEventName = docSnap.exists() ? (docSnap.data().name || '') : '';
+          if (state.view === 'popup') renderPopupView();
+        }, function(err) {
+          console.error('Pop-up event sync error:', err);
+        });
       }
     }, 300);
   });
@@ -419,8 +427,8 @@
     batchRecipeId: '',
     batchCount: '1',
     batchItemChecks: {},
-    popupSelectedFlavor: null,
-    popupQty: 1,
+    popupCart: {},
+    popupEventName: '',
     loyaltyEnabled: false,
     loyaltyFlavorId: '',
     loyaltyTier: '10',
@@ -1953,6 +1961,26 @@
     }
   }
 
+  function playSaleFeedback() {
+    try {
+      if (navigator.vibrate) navigator.vibrate(80);
+      var AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) {
+        var ctx = new AudioCtx();
+        var osc = ctx.createOscillator();
+        var gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.15);
+      }
+    } catch (e) { /* ignore */ }
+  }
+
   function getPopupStock(flavorId) {
     return (popupInventory && typeof popupInventory[flavorId] === 'number') ? popupInventory[flavorId] : 0;
   }
@@ -1966,7 +1994,21 @@
       if (paymentTotals.hasOwnProperty(x.payment)) paymentTotals[x.payment] += x.subtotal;
     });
 
+    var flavorTotals = {};
+    popupSalesList.forEach(function (x) {
+      flavorTotals[x.flavorName] = (flavorTotals[x.flavorName] || 0) + x.qty;
+    });
+    var topSeller = null;
+    Object.keys(flavorTotals).forEach(function (name) {
+      if (!topSeller || flavorTotals[name] > topSeller.qty) topSeller = { name: name, qty: flavorTotals[name] };
+    });
+
     var html = '<h1 class="title heading">\uD83C\uDF89 Pop-up Mode</h1>';
+
+    html += '<div class="field-card">';
+    html += '<label class="label" for="popupEventNameInput">Event name</label>';
+    html += '<input type="text" id="popupEventNameInput" placeholder="e.g., SM Fairview Weekend Market \u2014 Aug 16" value="' + esc(popupEventName) + '" />';
+    html += '</div>';
 
     html += '<div class="sales-summary">';
     html += '<div class="sum-card"><div class="k">Tubs Sold</div><div class="v">' + totalTubs + '</div></div>';
@@ -1974,6 +2016,9 @@
     PAYMENTS_POPUP.forEach(function (p) {
       html += '<div class="sum-card"><div class="k">' + esc(p) + '</div><div class="v">' + peso(paymentTotals[p]) + '</div></div>';
     });
+    if (topSeller) {
+      html += '<div class="sum-card"><div class="k">\uD83C\uDFC6 Top Seller</div><div class="v" style="font-size:15px;">' + esc(topSeller.name) + '</div></div>';
+    }
     html += '</div>';
 
     html += '<div class="field-card">';
@@ -1981,44 +2026,53 @@
     FLAVORS.forEach(function (f) {
       var stock = getPopupStock(f.id);
       html += '<div class="stock-row">';
-      html += '<span class="fn">' + esc(f.name) + '</span>';
-      html += '<div style="display:flex;align-items:center;gap:8px;">';
-      html += '<input type="number" min="0" data-popup-stock-input="' + f.id + '" placeholder="' + stock + '" />';
+      html += '<span class="fn">' + esc(f.name) + ' <span style="color:#8A8A78;font-weight:600;">(' + stock + ')</span></span>';
+      html += '<div style="display:flex;align-items:center;gap:6px;">';
+      html += '<button class="mini-btn export" data-quick-stock="' + f.id + ',5">+5</button>';
+      html += '<button class="mini-btn export" data-quick-stock="' + f.id + ',10">+10</button>';
+      html += '<input type="number" min="0" data-popup-stock-input="' + f.id + '" placeholder="set exact" style="width:90px;" />';
       html += '<button class="mini-btn fulfill" data-set-popup-stock="' + f.id + '">Set</button>';
       html += '</div></div>';
     });
     html += '</div>';
 
     html += '<div class="field-card">';
-    if (!state.popupSelectedFlavor) {
-      html += '<h2 class="heading" style="font-size:16px;color:#3D6690;margin:0 0 12px;">Tap a flavor to log a sale</h2>';
-      html += '<div style="display:flex;flex-wrap:wrap;gap:10px;">';
-      FLAVORS.forEach(function (f) {
-        var stock = getPopupStock(f.id);
-        var disabled = stock <= 0;
-        html += '<button class="pay-btn" data-tap-popup-flavor="' + f.id + '"' + (disabled ? ' disabled style="opacity:.4;"' : '') + ' style="min-width:130px;padding:16px 20px;font-size:14px;">';
-        html += esc(f.name) + '<br/><span style="font-size:11px;font-weight:600;">' + peso(f.price) + ' \u00b7 ' + (disabled ? 'No stock' : stock + ' left') + '</span>';
-        html += '</button>';
+    html += '<h2 class="heading" style="font-size:16px;color:#3D6690;margin:0 0 12px;">Tap flavors to log a sale</h2>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:10px;">';
+    FLAVORS.forEach(function (f) {
+      var stock = getPopupStock(f.id);
+      var inCart = state.popupCart[f.id] || 0;
+      var disabled = stock <= 0;
+      var lowStock = stock > 0 && stock <= 3;
+      var extraStyle = 'min-width:140px;padding:20px 22px;font-size:15px;';
+      if (lowStock) extraStyle += 'border-color:#B34545;background:#FBE4E4;';
+      html += '<button class="pay-btn' + (inCart > 0 ? ' selected' : '') + '" data-tap-popup-flavor="' + f.id + '"' + (disabled ? ' disabled style="opacity:.4;' + extraStyle + '"' : ' style="' + extraStyle + '"') + '>';
+      html += esc(f.name) + (inCart > 0 ? ' (' + inCart + ')' : '') + '<br/><span style="font-size:11.5px;font-weight:600;">' + peso(f.price) + ' \u00b7 ' + (disabled ? 'No stock' : (lowStock ? '\u26A0\uFE0F ' + stock + ' left' : stock + ' left')) + '</span>';
+      html += '</button>';
+    });
+    html += '</div>';
+
+    var cartLines = Object.keys(state.popupCart).filter(function (id) { return state.popupCart[id] > 0; }).map(function (id) {
+      var f = FLAVORS.find(function (ff) { return ff.id === id; });
+      return { id: id, name: f.name, price: f.price, qty: state.popupCart[id], subtotal: f.price * state.popupCart[id] };
+    });
+
+    if (cartLines.length > 0) {
+      var cartTotal = cartLines.reduce(function (s, l) { return s + l.subtotal; }, 0);
+      html += '<hr style="margin:16px 0;" />';
+      html += '<h3 class="heading" style="font-size:14.5px;color:#26374A;margin:0 0 8px;">Current Sale</h3>';
+      cartLines.forEach(function (l) {
+        html += '<div class="cart-line"><div><div class="nm">' + esc(l.name) + '</div><div class="qy">' + l.qty + ' \u00d7 ' + peso(l.price) + '</div></div>';
+        html += '<div style="display:flex;align-items:center;gap:8px;"><button class="qty-btn qty-minus" data-cart-minus="' + l.id + '">\u2212</button><span class="sub">' + peso(l.subtotal) + '</span></div></div>';
       });
-      html += '</div>';
-    } else {
-      var flavor = FLAVORS.find(function (f) { return f.id === state.popupSelectedFlavor; });
-      var stock = getPopupStock(flavor.id);
-      var qty = Math.min(state.popupQty, stock);
-      html += '<h2 class="heading" style="font-size:16px;color:#3D6690;margin:0 0 12px;">' + esc(flavor.name) + ' \u2014 ' + peso(flavor.price) + '</h2>';
-      html += '<div class="qty-row" style="justify-content:center;">';
-      html += '<button class="qty-btn" id="popupQtyMinus">\u2212</button>';
-      html += '<span style="font-weight:800;font-size:20px;min-width:40px;text-align:center;">' + qty + '</span>';
-      html += '<button class="qty-btn" id="popupQtyPlus"' + (qty >= stock ? ' disabled style="opacity:.4;"' : '') + '>+</button>';
-      html += '</div>';
-      html += '<div class="total-row"><span class="lbl">Subtotal</span><span class="val">' + peso(flavor.price * qty) + '</span></div>';
+      html += '<div class="total-row"><span class="lbl">Total</span><span class="val">' + peso(cartTotal) + '</span></div>';
       html += '<label class="label" style="margin-top:10px;">Payment method</label>';
       html += '<div class="pay-grid">';
       PAYMENTS_POPUP.forEach(function (p) {
-        html += '<button class="pay-btn" data-popup-payment="' + p + '" style="padding:18px;font-size:15px;">' + esc(p) + '</button>';
+        html += '<button class="pay-btn" data-popup-payment="' + p + '" style="padding:20px;font-size:16px;">' + esc(p) + '</button>';
       });
       html += '</div>';
-      html += '<button class="mini-btn void" id="popupCancelBtn" style="margin-top:12px;">Cancel</button>';
+      html += '<button class="mini-btn void" id="popupCancelBtn" style="margin-top:12px;">Clear Sale</button>';
     }
     html += '</div>';
 
@@ -2050,6 +2104,28 @@
     var root = document.getElementById('popupView');
     var fdb = window.FirebaseDB;
 
+    var popupEventNameInput = document.getElementById('popupEventNameInput');
+    if (popupEventNameInput) {
+      popupEventNameInput.addEventListener('blur', function () {
+        if (fdb && fdb.db) {
+          withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "popupEvent"), { name: popupEventNameInput.value.trim() }, { merge: true }), 'save the event name');
+        }
+      });
+    }
+
+    root.querySelectorAll('[data-quick-stock]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var parts = btn.getAttribute('data-quick-stock').split(',');
+        var id = parts[0];
+        var amount = parseInt(parts[1], 10);
+        if (fdb && fdb.db) {
+          var update = {};
+          update[id] = fdb.increment(amount);
+          withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "popupInventory"), update, { merge: true }), 'add stock');
+        }
+      });
+    });
+
     root.querySelectorAll('[data-set-popup-stock]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         var id = btn.getAttribute('data-set-popup-stock');
@@ -2067,31 +2143,32 @@
     root.querySelectorAll('[data-tap-popup-flavor]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         if (btn.disabled) return;
-        state.popupSelectedFlavor = btn.getAttribute('data-tap-popup-flavor');
-        state.popupQty = 1;
+        var id = btn.getAttribute('data-tap-popup-flavor');
+        var stock = getPopupStock(id);
+        var current = state.popupCart[id] || 0;
+        if (current >= stock) return;
+        state.popupCart[id] = current + 1;
         renderPopupView();
       });
     });
 
-    var popupQtyMinus = document.getElementById('popupQtyMinus');
-    if (popupQtyMinus) {
-      popupQtyMinus.addEventListener('click', function () {
-        state.popupQty = Math.max(1, state.popupQty - 1);
+    root.querySelectorAll('[data-cart-minus]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var id = btn.getAttribute('data-cart-minus');
+        var current = state.popupCart[id] || 0;
+        if (current <= 1) {
+          delete state.popupCart[id];
+        } else {
+          state.popupCart[id] = current - 1;
+        }
         renderPopupView();
       });
-    }
-    var popupQtyPlus = document.getElementById('popupQtyPlus');
-    if (popupQtyPlus) {
-      popupQtyPlus.addEventListener('click', function () {
-        state.popupQty = state.popupQty + 1;
-        renderPopupView();
-      });
-    }
+    });
+
     var popupCancelBtn = document.getElementById('popupCancelBtn');
     if (popupCancelBtn) {
       popupCancelBtn.addEventListener('click', function () {
-        state.popupSelectedFlavor = null;
-        state.popupQty = 1;
+        state.popupCart = {};
         renderPopupView();
       });
     }
@@ -2099,28 +2176,29 @@
     root.querySelectorAll('[data-popup-payment]').forEach(function (btn) {
       btn.addEventListener('click', function () {
         var payment = btn.getAttribute('data-popup-payment');
-        var flavor = FLAVORS.find(function (f) { return f.id === state.popupSelectedFlavor; });
-        if (!flavor || !fdb || !fdb.db) return;
-        var stock = getPopupStock(flavor.id);
-        var qty = Math.min(state.popupQty, stock);
-        if (qty <= 0) return;
-
-        withErr(fdb.addDoc(fdb.collection(fdb.db, "popupSales"), {
-          flavorId: flavor.id,
-          flavorName: flavor.name,
-          qty: qty,
-          price: flavor.price,
-          subtotal: flavor.price * qty,
-          payment: payment,
-          time: new Date().toISOString()
-        }), 'log the sale');
-
-        var update = {};
-        update[flavor.id] = fdb.increment(-qty);
-        withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "popupInventory"), update, { merge: true }), 'update pop-up stock');
-
-        state.popupSelectedFlavor = null;
-        state.popupQty = 1;
+        if (!fdb || !fdb.db) return;
+        var stockUpdate = {};
+        Object.keys(state.popupCart).forEach(function (id) {
+          var qty = state.popupCart[id];
+          if (qty <= 0) return;
+          var flavor = FLAVORS.find(function (f) { return f.id === id; });
+          if (!flavor) return;
+          withErr(fdb.addDoc(fdb.collection(fdb.db, "popupSales"), {
+            flavorId: flavor.id,
+            flavorName: flavor.name,
+            qty: qty,
+            price: flavor.price,
+            subtotal: flavor.price * qty,
+            payment: payment,
+            time: new Date().toISOString()
+          }), 'log the sale');
+          stockUpdate[id] = fdb.increment(-qty);
+        });
+        if (Object.keys(stockUpdate).length > 0) {
+          withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "popupInventory"), stockUpdate, { merge: true }), 'update pop-up stock');
+        }
+        playSaleFeedback();
+        state.popupCart = {};
       });
     });
 
@@ -2144,6 +2222,7 @@
     if (exportPopupCsvBtn) {
       exportPopupCsvBtn.addEventListener('click', function () {
         var lines = [];
+        if (popupEventName) lines.push('Event:,' + csvEscape(popupEventName));
         lines.push(['Time', 'Flavor', 'Qty', 'Payment', 'Subtotal'].join(','));
         popupSalesList.forEach(function (x) {
           lines.push([new Date(x.time).toLocaleString(), x.flavorName, x.qty, x.payment, x.subtotal.toFixed(2)].map(csvEscape).join(','));
@@ -2152,7 +2231,8 @@
         var url = URL.createObjectURL(blob);
         var a = document.createElement('a');
         a.href = url;
-        a.download = 'wubber-popup-' + new Date().toISOString().slice(0, 10) + '.csv';
+        var safeName = popupEventName ? popupEventName.replace(/[^a-z0-9]+/gi, '-').toLowerCase() : 'popup';
+        a.download = 'wubber-' + safeName + '-' + new Date().toISOString().slice(0, 10) + '.csv';
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -2171,7 +2251,9 @@
           var clearStock = {};
           FLAVORS.forEach(function (f) { clearStock[f.id] = 0; });
           withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "popupInventory"), clearStock, { merge: true }), 'reset pop-up stock');
+          withErr(fdb.setDoc(fdb.doc(fdb.db, "meta", "popupEvent"), { name: '' }, { merge: true }), 'reset event name');
         }
+        state.popupCart = {};
       });
     }
   }
